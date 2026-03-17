@@ -1,0 +1,104 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>30-Day Stock Predictor</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <main class="page">
+        <section class="card">
+            <p class="eyebrow">Flask + XGBoost</p>
+            <h1>30-Day Stock Predictor</h1>
+            <p class="description">
+                Enter a stock ticker to download historical data, train the model, and estimate the next 30-day return.
+            </p>
+
+            <form id="predict-form" class="predict-form">
+                <label for="ticker">Ticker Symbol</label>
+                <div class="input-row">
+                    <input
+                        id="ticker"
+                        name="ticker"
+                        type="text"
+                        placeholder="AAPL"
+                        maxlength="10"
+                        autocomplete="off"
+                    >
+                    <button id="predict-button" type="submit">Run Prediction</button>
+                </div>
+                <p class="hint">Examples: AAPL, TSLA, MSFT, NVDA, BRK-B</p>
+            </form>
+
+            <section id="loading-section" class="panel hidden" aria-live="polite">
+                <div class="status-row">
+                    <span class="status-title">Generating prediction...</span>
+                    <span id="progress-label">0%</span>
+                </div>
+                <div class="progress-track">
+                    <div id="progress-bar" class="progress-bar"></div>
+                </div>
+                <p class="panel-note">
+                    Downloading data, preparing features, training the model, and building the forecast.
+                </p>
+            </section>
+
+            <section id="error-section" class="panel panel-error hidden" aria-live="polite"></section>
+
+            <section id="results-section" class="panel hidden" aria-live="polite">
+                <div class="results-header">
+                    <div>
+                        <p class="results-label">Prediction Ready</p>
+                        <h2 id="result-ticker">AAPL</h2>
+                        <p id="result-summary" class="summary"></p>
+                    </div>
+                    <span id="result-outlook" class="outlook-badge">Bullish outlook</span>
+                </div>
+
+                <div class="results-grid">
+                    <article class="result-box">
+                        <span class="box-label">Latest Close Price</span>
+                        <strong id="result-latest-close">$0.00</strong>
+                    </article>
+                    <article class="result-box">
+                        <span class="box-label">Predicted 30-Day Return</span>
+                        <strong id="result-predicted-return">0.00%</strong>
+                    </article>
+                    <article class="result-box">
+                        <span class="box-label">Estimated Price in 30 Days</span>
+                        <strong id="result-estimated-price">$0.00</strong>
+                    </article>
+                </div>
+
+                <div class="metrics">
+                    <h3>Model Evaluation</h3>
+                    <div class="metrics-grid">
+                        <article class="metric-box">
+                            <span class="metric-label">MAE</span>
+                            <strong id="metric-mae">0.0000</strong>
+                        </article>
+                        <article class="metric-box">
+                            <span class="metric-label">RMSE</span>
+                            <strong id="metric-rmse">0.0000</strong>
+                        </article>
+                        <article class="metric-box">
+                            <span class="metric-label">R^2</span>
+                            <strong id="metric-r2">0.0000</strong>
+                        </article>
+                        <article class="metric-box">
+                            <span class="metric-label">Direction Accuracy</span>
+                            <strong id="metric-direction-accuracy">0.0%</strong>
+                        </article>
+                    </div>
+                </div>
+
+                <p id="result-data-note" class="data-note"></p>
+            </section>
+        </section>
+    </main>
+
+    <script src="{{ url_for('static', filename='script.js') }}"></script>
+</body>
+</html>
+
