@@ -1,4 +1,4 @@
-﻿:root {
+:root {
     --bg-start: #f6efe4;
     --bg-end: #deebff;
     --card-bg: rgba(255, 255, 255, 0.9);
@@ -306,4 +306,412 @@ button:disabled {
     .metrics-grid {
         grid-template-columns: 1fr;
     }
+}
+
+/* ==========================================================================
+   Navigation bar
+   ========================================================================== */
+
+.main-nav {
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    background: rgba(255, 255, 255, 0.88);
+    backdrop-filter: blur(10px);
+    border-bottom: 1px solid var(--border);
+}
+
+.nav-inner {
+    max-width: 860px;
+    margin: 0 auto;
+    padding: 12px 24px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+}
+
+.nav-brand {
+    font-weight: 700;
+    font-size: 1.05rem;
+    color: var(--text);
+    text-decoration: none;
+}
+
+.nav-links {
+    display: flex;
+    gap: 6px;
+}
+
+.nav-link {
+    padding: 8px 14px;
+    border-radius: 10px;
+    font-size: 0.92rem;
+    font-weight: 600;
+    color: var(--muted);
+    text-decoration: none;
+    transition: background 0.18s ease, color 0.18s ease;
+}
+
+.nav-link:hover {
+    background: rgba(35, 104, 196, 0.08);
+    color: var(--accent);
+}
+
+.nav-link.active {
+    background: rgba(35, 104, 196, 0.12);
+    color: var(--accent);
+}
+
+@media (max-width: 640px) {
+    .nav-inner {
+        flex-direction: column;
+        gap: 8px;
+    }
+    .nav-links {
+        width: 100%;
+        justify-content: center;
+    }
+}
+
+/* ==========================================================================
+   Data tables (watchlist, predictions)
+   ========================================================================== */
+
+.table-wrap {
+    overflow-x: auto;
+}
+
+.data-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.92rem;
+}
+
+.data-table th,
+.data-table td {
+    padding: 10px 12px;
+    text-align: left;
+    white-space: nowrap;
+}
+
+.data-table thead th {
+    font-weight: 700;
+    color: var(--muted);
+    font-size: 0.82rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    border-bottom: 2px solid var(--border);
+}
+
+.data-table tbody tr {
+    border-bottom: 1px solid var(--border);
+    transition: background 0.12s ease;
+}
+
+.data-table tbody tr:hover {
+    background: rgba(35, 104, 196, 0.04);
+}
+
+.data-table tbody tr:last-child {
+    border-bottom: none;
+}
+
+.action-cell {
+    display: flex;
+    gap: 6px;
+}
+
+/* ==========================================================================
+   Buttons – variants
+   ========================================================================== */
+
+.btn-small {
+    padding: 6px 12px;
+    border: 0;
+    border-radius: 8px;
+    font-size: 0.82rem;
+    font-weight: 700;
+    cursor: pointer;
+    color: #ffffff;
+    transition: opacity 0.15s ease;
+}
+
+.btn-small:hover:not(:disabled) {
+    opacity: 0.88;
+}
+
+.btn-small:disabled {
+    opacity: 0.6;
+    cursor: wait;
+}
+
+.btn-primary {
+    background: linear-gradient(135deg, var(--accent), var(--accent-dark));
+}
+
+.btn-danger {
+    background: linear-gradient(135deg, #d14545, #a93333);
+}
+
+.btn-secondary {
+    padding: 12px 20px;
+    border: 2px solid var(--accent);
+    border-radius: 12px;
+    font: inherit;
+    font-weight: 700;
+    color: var(--accent);
+    background: transparent;
+    cursor: pointer;
+    transition: background 0.18s ease, color 0.18s ease;
+}
+
+.btn-secondary:hover:not(:disabled) {
+    background: var(--accent);
+    color: #ffffff;
+}
+
+.btn-secondary:disabled {
+    opacity: 0.6;
+    cursor: wait;
+}
+
+/* ==========================================================================
+   Badges (owned, direction, status, result)
+   ========================================================================== */
+
+.badge-btn {
+    padding: 5px 10px;
+    border: 0;
+    border-radius: 999px;
+    font-size: 0.8rem;
+    font-weight: 700;
+    cursor: pointer;
+    transition: opacity 0.15s ease;
+}
+
+.badge-btn:hover {
+    opacity: 0.85;
+}
+
+.badge-owned {
+    background: #e8f7f1;
+    color: var(--positive);
+}
+
+.badge-not-owned {
+    background: #f0f3f7;
+    color: var(--muted);
+}
+
+.dir-badge,
+.status-badge,
+.result-badge {
+    display: inline-block;
+    padding: 3px 9px;
+    border-radius: 999px;
+    font-size: 0.78rem;
+    font-weight: 700;
+    text-transform: capitalize;
+}
+
+.badge-up {
+    background: #e8f7f1;
+    color: var(--positive);
+}
+
+.badge-down {
+    background: #fff0f0;
+    color: var(--negative);
+}
+
+.badge-neutral {
+    background: #fff7df;
+    color: var(--neutral);
+}
+
+.badge-pending {
+    background: #eef3ff;
+    color: var(--accent);
+}
+
+.badge-completed {
+    background: #e8f7f1;
+    color: var(--positive);
+}
+
+.badge-correct {
+    background: #e8f7f1;
+    color: var(--positive);
+}
+
+.badge-incorrect {
+    background: #fff0f0;
+    color: var(--negative);
+}
+
+/* ==========================================================================
+   Overlay (prediction result pop-up on watchlist page)
+   ========================================================================== */
+
+.overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 200;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(23, 48, 79, 0.35);
+    backdrop-filter: blur(4px);
+}
+
+.overlay.hidden {
+    display: none;
+}
+
+.overlay-content {
+    width: min(560px, 92vw);
+    max-height: 85vh;
+    overflow-y: auto;
+}
+
+.overlay-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 16px;
+}
+
+.overlay-header h3 {
+    margin: 0;
+}
+
+.close-btn {
+    width: 36px;
+    height: 36px;
+    padding: 0;
+    border: 0;
+    border-radius: 10px;
+    font-size: 1.4rem;
+    line-height: 1;
+    color: var(--muted);
+    background: transparent;
+    cursor: pointer;
+    transition: background 0.15s ease;
+}
+
+.close-btn:hover {
+    background: rgba(0, 0, 0, 0.06);
+}
+
+/* ==========================================================================
+   Feedback panels
+   ========================================================================== */
+
+.panel-success {
+    border-color: #b5e6cd;
+    background: #edfbf3;
+    color: var(--positive);
+    font-weight: 600;
+}
+
+/* ==========================================================================
+   Empty state
+   ========================================================================== */
+
+.empty-state {
+    padding: 20px 0;
+    color: var(--muted);
+    text-align: center;
+    font-size: 0.95rem;
+}
+
+/* ==========================================================================
+   Filters
+   ========================================================================== */
+
+.filter-row {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 14px;
+}
+
+.filter-select,
+.filter-input {
+    padding: 9px 12px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    font: inherit;
+    font-size: 0.9rem;
+    color: var(--text);
+    background: #ffffff;
+}
+
+.filter-select:focus,
+.filter-input:focus {
+    outline: 3px solid rgba(35, 104, 196, 0.16);
+    border-color: var(--accent);
+}
+
+/* ==========================================================================
+   Evaluate row
+   ========================================================================== */
+
+.evaluate-row {
+    margin-top: 16px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+/* ==========================================================================
+   Performance grid override
+   ========================================================================== */
+
+.perf-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+}
+
+@media (max-width: 700px) {
+    .perf-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+    }
+}
+
+@media (max-width: 520px) {
+    .perf-grid {
+        grid-template-columns: 1fr !important;
+    }
+}
+
+/* ==========================================================================
+   Saved-note on predict page
+   ========================================================================== */
+
+.saved-note {
+    margin-top: 14px;
+    padding: 10px 14px;
+    border-radius: 10px;
+    background: #edfbf3;
+    color: var(--positive);
+    font-weight: 600;
+    font-size: 0.92rem;
+}
+
+.saved-note a {
+    color: var(--positive);
+}
+
+/* ==========================================================================
+   Link styling inside descriptions
+   ========================================================================== */
+
+.description a {
+    color: var(--accent);
+    text-decoration: underline;
+    text-underline-offset: 3px;
+}
+
+.description a:hover {
+    color: var(--accent-dark);
 }

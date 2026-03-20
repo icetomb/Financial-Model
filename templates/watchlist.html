@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+
+{% block title %}Watchlist — Stock Prediction Tracker{% endblock %}
+
+{% block content %}
+<section class="card">
+    <p class="eyebrow">Watchlist</p>
+    <h1>Tracked Stocks</h1>
+    <p class="description">
+        Add tickers you want to track over time.
+        Run <strong>Model 1</strong> predictions on watchlist stocks to build prediction history.
+    </p>
+
+    <!-- Add ticker form -->
+    <form id="add-watchlist-form" class="predict-form">
+        <label for="watchlist-ticker">Add Ticker to Watchlist</label>
+        <div class="input-row">
+            <input
+                id="watchlist-ticker"
+                type="text"
+                placeholder="AAPL"
+                maxlength="10"
+                autocomplete="off"
+            >
+            <button id="add-button" type="submit">Add to Watchlist</button>
+        </div>
+    </form>
+
+    <!-- Feedback banners -->
+    <div id="watchlist-message" class="panel panel-success hidden" aria-live="polite"></div>
+    <div id="watchlist-error"   class="panel panel-error hidden"   aria-live="polite"></div>
+
+    <!-- Watchlist table -->
+    <section id="watchlist-section" class="panel" style="margin-top:22px;">
+        <h3 style="margin:0 0 14px;">Your Watchlist</h3>
+
+        <div id="watchlist-empty" class="empty-state">
+            No stocks on your watchlist yet. Add a ticker above to get started.
+        </div>
+
+        <div class="table-wrap">
+            <table id="watchlist-table" class="data-table hidden">
+                <thead>
+                    <tr>
+                        <th>Ticker</th>
+                        <th>Company</th>
+                        <th>Owned</th>
+                        <th>Date Added</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="watchlist-body"></tbody>
+            </table>
+        </div>
+    </section>
+</section>
+
+<!-- Overlay shown after a prediction is run and saved -->
+<div id="prediction-overlay" class="overlay hidden">
+    <div class="overlay-content card">
+        <div class="overlay-header">
+            <h3>Model 1 Prediction Saved</h3>
+            <button id="close-overlay" class="close-btn">&times;</button>
+        </div>
+        <div id="overlay-body"></div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='watchlist.js') }}"></script>
+{% endblock %}

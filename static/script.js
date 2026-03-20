@@ -1,4 +1,4 @@
-﻿const form = document.getElementById("predict-form");
+const form = document.getElementById("predict-form");
 const tickerInput = document.getElementById("ticker");
 const predictButton = document.getElementById("predict-button");
 
@@ -155,6 +155,16 @@ function renderResults(data) {
     resultDataNote.textContent =
         `Latest market data used: ${data.latest_data_date}. ` +
         `Train/Test samples: ${data.samples.train}/${data.samples.test}.`;
+
+    // Show a note when the prediction was auto-saved for a watchlist ticker
+    const savedNote = document.getElementById("saved-note");
+    if (savedNote) {
+        if (data.saved_to_history) {
+            savedNote.classList.remove("hidden");
+        } else {
+            savedNote.classList.add("hidden");
+        }
+    }
 
     resultsSection.classList.remove("hidden");
 }

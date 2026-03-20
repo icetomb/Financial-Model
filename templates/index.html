@@ -1,104 +1,108 @@
-﻿<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>30-Day Stock Predictor</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
-</head>
-<body>
-    <main class="page">
-        <section class="card">
-            <p class="eyebrow">Flask + XGBoost</p>
-            <h1>30-Day Stock Predictor</h1>
-            <p class="description">
-                Enter a stock ticker to download historical data, train the model, and estimate the next 30-day return.
-            </p>
+{% extends "base.html" %}
 
-            <form id="predict-form" class="predict-form">
-                <label for="ticker">Ticker Symbol</label>
-                <div class="input-row">
-                    <input
-                        id="ticker"
-                        name="ticker"
-                        type="text"
-                        placeholder="AAPL"
-                        maxlength="10"
-                        autocomplete="off"
-                    >
-                    <button id="predict-button" type="submit">Run Prediction</button>
-                </div>
-                <p class="hint">Examples: AAPL, TSLA, MSFT, NVDA, BRK-B</p>
-            </form>
+{% block title %}Model 1 — 30-Day Stock Predictor{% endblock %}
 
-            <section id="loading-section" class="panel hidden" aria-live="polite">
-                <div class="status-row">
-                    <span class="status-title">Generating prediction...</span>
-                    <span id="progress-label">0%</span>
-                </div>
-                <div class="progress-track">
-                    <div id="progress-bar" class="progress-bar"></div>
-                </div>
-                <p class="panel-note">
-                    Downloading data, preparing features, training the model, and building the forecast.
-                </p>
-            </section>
+{% block content %}
+<section class="card">
+    <p class="eyebrow">Model 1 &mdash; XGBoost</p>
+    <h1>30-Day Stock Predictor</h1>
+    <p class="description">
+        Enter a stock ticker to download historical data, train <strong>Model 1</strong>,
+        and estimate the next 30-day return.
+        If the ticker is on your <a href="/watchlist">watchlist</a>, the prediction
+        will be saved automatically.
+    </p>
 
-            <section id="error-section" class="panel panel-error hidden" aria-live="polite"></section>
+    <form id="predict-form" class="predict-form">
+        <label for="ticker">Ticker Symbol</label>
+        <div class="input-row">
+            <input
+                id="ticker"
+                name="ticker"
+                type="text"
+                placeholder="AAPL"
+                maxlength="10"
+                autocomplete="off"
+            >
+            <button id="predict-button" type="submit">Run Prediction</button>
+        </div>
+        <p class="hint">Examples: AAPL, TSLA, MSFT, NVDA, BRK-B</p>
+    </form>
 
-            <section id="results-section" class="panel hidden" aria-live="polite">
-                <div class="results-header">
-                    <div>
-                        <p class="results-label">Prediction Ready</p>
-                        <h2 id="result-ticker">AAPL</h2>
-                        <p id="result-summary" class="summary"></p>
-                    </div>
-                    <span id="result-outlook" class="outlook-badge">Bullish outlook</span>
-                </div>
+    <section id="loading-section" class="panel hidden" aria-live="polite">
+        <div class="status-row">
+            <span class="status-title">Generating Model 1 prediction&hellip;</span>
+            <span id="progress-label">0%</span>
+        </div>
+        <div class="progress-track">
+            <div id="progress-bar" class="progress-bar"></div>
+        </div>
+        <p class="panel-note">
+            Downloading data, preparing features, training Model 1, and building the forecast.
+        </p>
+    </section>
 
-                <div class="results-grid">
-                    <article class="result-box">
-                        <span class="box-label">Latest Close Price</span>
-                        <strong id="result-latest-close">$0.00</strong>
-                    </article>
-                    <article class="result-box">
-                        <span class="box-label">Predicted 30-Day Return</span>
-                        <strong id="result-predicted-return">0.00%</strong>
-                    </article>
-                    <article class="result-box">
-                        <span class="box-label">Estimated Price in 30 Days</span>
-                        <strong id="result-estimated-price">$0.00</strong>
-                    </article>
-                </div>
+    <section id="error-section" class="panel panel-error hidden" aria-live="polite"></section>
 
-                <div class="metrics">
-                    <h3>Model Evaluation</h3>
-                    <div class="metrics-grid">
-                        <article class="metric-box">
-                            <span class="metric-label">MAE</span>
-                            <strong id="metric-mae">0.0000</strong>
-                        </article>
-                        <article class="metric-box">
-                            <span class="metric-label">RMSE</span>
-                            <strong id="metric-rmse">0.0000</strong>
-                        </article>
-                        <article class="metric-box">
-                            <span class="metric-label">R^2</span>
-                            <strong id="metric-r2">0.0000</strong>
-                        </article>
-                        <article class="metric-box">
-                            <span class="metric-label">Direction Accuracy</span>
-                            <strong id="metric-direction-accuracy">0.0%</strong>
-                        </article>
-                    </div>
-                </div>
+    <section id="results-section" class="panel hidden" aria-live="polite">
+        <div class="results-header">
+            <div>
+                <p class="results-label">Model 1 &mdash; Prediction Ready</p>
+                <h2 id="result-ticker">AAPL</h2>
+                <p id="result-summary" class="summary"></p>
+            </div>
+            <span id="result-outlook" class="outlook-badge">Bullish outlook</span>
+        </div>
 
-                <p id="result-data-note" class="data-note"></p>
-            </section>
-        </section>
-    </main>
+        <div class="results-grid">
+            <article class="result-box">
+                <span class="box-label">Latest Close Price</span>
+                <strong id="result-latest-close">$0.00</strong>
+            </article>
+            <article class="result-box">
+                <span class="box-label">Predicted 30-Day Return</span>
+                <strong id="result-predicted-return">0.00%</strong>
+            </article>
+            <article class="result-box">
+                <span class="box-label">Estimated Price in 30 Days</span>
+                <strong id="result-estimated-price">$0.00</strong>
+            </article>
+        </div>
 
-    <script src="{{ url_for('static', filename='script.js') }}"></script>
-</body>
-</html>
+        <div class="metrics">
+            <h3>Model 1 Evaluation</h3>
+            <div class="metrics-grid">
+                <article class="metric-box">
+                    <span class="metric-label">MAE</span>
+                    <strong id="metric-mae">0.0000</strong>
+                </article>
+                <article class="metric-box">
+                    <span class="metric-label">RMSE</span>
+                    <strong id="metric-rmse">0.0000</strong>
+                </article>
+                <article class="metric-box">
+                    <span class="metric-label">R^2</span>
+                    <strong id="metric-r2">0.0000</strong>
+                </article>
+                <article class="metric-box">
+                    <span class="metric-label">Direction Accuracy</span>
+                    <strong id="metric-direction-accuracy">0.0%</strong>
+                </article>
+            </div>
+        </div>
 
+        <p id="result-data-note" class="data-note"></p>
+
+        <!-- Shown when the prediction was auto-saved because the ticker is on the watchlist -->
+        <p id="saved-note" class="saved-note hidden">
+            &#10003; This prediction was saved to your
+            <a href="/predictions">prediction history</a>
+            because the ticker is on your watchlist.
+        </p>
+    </section>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='script.js') }}"></script>
+{% endblock %}

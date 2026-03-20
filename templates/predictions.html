@@ -1,0 +1,118 @@
+{% extends "base.html" %}
+
+{% block title %}Prediction History — Stock Prediction Tracker{% endblock %}
+
+{% block content %}
+<section class="card">
+    <p class="eyebrow">Model 1 Performance</p>
+    <h1>Prediction History</h1>
+    <p class="description">
+        Review saved predictions and track <strong>Model 1</strong> accuracy over time.
+        Predictions are evaluated after their 30-day horizon has passed.
+    </p>
+
+    <!-- ── Performance summary ── -->
+    <section id="performance-section" class="panel" style="margin-top:22px;">
+        <h3 style="margin:0 0 14px;">Model 1 &mdash; Performance Summary</h3>
+
+        <div id="perf-empty" class="empty-state">No predictions recorded yet.</div>
+
+        <div id="perf-grid" class="results-grid perf-grid hidden">
+            <article class="result-box">
+                <span class="box-label">Total Predictions</span>
+                <strong id="perf-total">0</strong>
+            </article>
+            <article class="result-box">
+                <span class="box-label">Completed</span>
+                <strong id="perf-completed">0</strong>
+            </article>
+            <article class="result-box">
+                <span class="box-label">Pending</span>
+                <strong id="perf-pending">0</strong>
+            </article>
+            <article class="result-box">
+                <span class="box-label">Correct</span>
+                <strong id="perf-correct" class="value-positive">0</strong>
+            </article>
+            <article class="result-box">
+                <span class="box-label">Incorrect</span>
+                <strong id="perf-incorrect" class="value-negative">0</strong>
+            </article>
+            <article class="result-box">
+                <span class="box-label">Direction Accuracy</span>
+                <strong id="perf-accuracy">0%</strong>
+            </article>
+            <article class="result-box">
+                <span class="box-label">Avg Prediction Error</span>
+                <strong id="perf-avg-error">0%</strong>
+            </article>
+            <article class="result-box">
+                <span class="box-label">Avg Predicted Return</span>
+                <strong id="perf-avg-predicted">0%</strong>
+            </article>
+            <article class="result-box">
+                <span class="box-label">Avg Actual Return</span>
+                <strong id="perf-avg-actual">0%</strong>
+            </article>
+        </div>
+    </section>
+
+    <!-- ── Evaluate button ── -->
+    <div class="evaluate-row">
+        <button id="evaluate-btn" class="btn-secondary">
+            Evaluate Pending Predictions
+        </button>
+        <span id="evaluate-status" class="hint"></span>
+    </div>
+
+    <!-- ── Prediction table ── -->
+    <section class="panel" style="margin-top:22px;">
+        <h3 style="margin:0 0 14px;">All Predictions</h3>
+
+        <div class="filter-row">
+            <select id="filter-status" class="filter-select">
+                <option value="">All Statuses</option>
+                <option value="pending">Pending</option>
+                <option value="completed">Completed</option>
+            </select>
+            <input
+                id="filter-ticker"
+                class="filter-input"
+                type="text"
+                placeholder="Filter by ticker…"
+                maxlength="10"
+            >
+        </div>
+
+        <div id="predictions-empty" class="empty-state">
+            No predictions recorded yet. Run predictions from the
+            <a href="/watchlist">watchlist</a> or <a href="/">predict page</a>.
+        </div>
+
+        <div class="table-wrap">
+            <table id="predictions-table" class="data-table hidden">
+                <thead>
+                    <tr>
+                        <th>Ticker</th>
+                        <th>Date</th>
+                        <th>Close</th>
+                        <th>Pred. Return</th>
+                        <th>Pred. Dir.</th>
+                        <th>Status</th>
+                        <th>Actual Return</th>
+                        <th>Actual Dir.</th>
+                        <th>Result</th>
+                        <th>Magnitude</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody id="predictions-body"></tbody>
+            </table>
+        </div>
+    </section>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='predictions.js') }}"></script>
+{% endblock %}
