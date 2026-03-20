@@ -7,7 +7,7 @@ import yfinance as yf
 from flask import Flask, jsonify, render_template, request
 
 import database as db
-from stock_30day_predictor import PredictionError, build_prediction
+from models.model_1 import PredictionError, build_prediction
 
 
 def _return_direction(value: float) -> str:
