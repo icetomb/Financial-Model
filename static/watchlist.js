@@ -13,6 +13,8 @@ const watchlistTable = document.getElementById("watchlist-table");
 const watchlistBody = document.getElementById("watchlist-body");
 const emptyState = document.getElementById("watchlist-empty");
 
+const watchlistModel = document.getElementById("watchlist-model");
+
 const overlay = document.getElementById("prediction-overlay");
 const overlayBody = document.getElementById("overlay-body");
 const closeOverlayBtn = document.getElementById("close-overlay");
@@ -190,9 +192,11 @@ async function removeFromWatchlist(id) {
     }
 }
 
-// -------- Run prediction --------
+// -------- Run prediction (uses the selected model) --------
 
 async function runPrediction(ticker, btn) {
+    const modelName = watchlistModel.value;
+
     btn.disabled = true;
     btn.textContent = "Running\u2026";
 
@@ -200,7 +204,7 @@ async function runPrediction(ticker, btn) {
         const res = await fetch("/api/predictions/run", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ ticker, model_name: "Model 1" }),
+            body: JSON.stringify({ ticker, model_name: modelName }),
         });
         const data = await res.json();
 
@@ -211,6 +215,9 @@ async function runPrediction(ticker, btn) {
 
         const result = data.result;
         const pred = data.prediction;
+
+        // Update overlay heading to reflect which model was used
+        document.getElementById("overlay-model-name").textContent = modelName;
 
         overlayBody.innerHTML = `
             <div class="results-grid" style="grid-template-columns: repeat(2, 1fr);">
@@ -234,7 +241,7 @@ async function runPrediction(ticker, btn) {
                 </article>
             </div>
             <p class="hint" style="margin-top:14px;">
-                Prediction saved as <strong>${pred.status}</strong>. View all
+                Prediction saved as <strong>${pred.status}</strong> (${modelName}). View all
                 predictions on the <a href="/predictions">Predictions</a> page.
             </p>
         `;

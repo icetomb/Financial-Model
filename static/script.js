@@ -1,6 +1,11 @@
+// ---------------------------------------------------------------------------
+// Predict page – runs Model 1 or Model 2 predictions
+// ---------------------------------------------------------------------------
+
 const form = document.getElementById("predict-form");
 const tickerInput = document.getElementById("ticker");
 const predictButton = document.getElementById("predict-button");
+const modelSelect = document.getElementById("model-select");
 
 const loadingSection = document.getElementById("loading-section");
 const errorSection = document.getElementById("error-section");
@@ -23,6 +28,32 @@ const resultDataNote = document.getElementById("result-data-note");
 
 let progressTimer = null;
 let progressValue = 0;
+
+// -- Model metadata for dynamic UI text --
+const MODEL_INFO = {
+    "Model 1": {
+        eyebrow: "Model 1 \u2014 XGBoost",
+        loadingTitle: "Generating Model 1 prediction\u2026",
+        loadingNote:
+            "Downloading data, preparing features, training Model 1, and building the forecast.",
+    },
+    "Model 2": {
+        eyebrow: "Model 2 \u2014 XGBoost + Market Context",
+        loadingTitle: "Generating Model 2 prediction\u2026",
+        loadingNote:
+            "Downloading stock, SPY & VIX data, preparing features, training Model 2, and building the forecast.",
+    },
+};
+
+// Update header text when the model selector changes
+function updateModelLabels() {
+    const info = MODEL_INFO[modelSelect.value] || MODEL_INFO["Model 1"];
+    document.getElementById("model-eyebrow").textContent = info.eyebrow;
+}
+
+modelSelect.addEventListener("change", updateModelLabels);
+
+// -------- Progress helpers --------
 
 function setProgress(value) {
     progressValue = value;
@@ -53,6 +84,11 @@ function clearFeedback() {
 function startLoading() {
     clearFeedback();
     setProgress(0);
+
+    const info = MODEL_INFO[modelSelect.value] || MODEL_INFO["Model 1"];
+    document.getElementById("loading-title").textContent = info.loadingTitle;
+    document.getElementById("loading-note").textContent = info.loadingNote;
+
     loadingSection.classList.remove("hidden");
     predictButton.disabled = true;
     predictButton.textContent = "Working...";
@@ -81,6 +117,8 @@ function showError(message) {
     errorSection.textContent = message;
     errorSection.classList.remove("hidden");
 }
+
+// -------- Formatters --------
 
 function formatCurrency(value) {
     return new Intl.NumberFormat("en-US", {
@@ -127,7 +165,16 @@ function setValueTone(element, value) {
     element.classList.add("value-neutral");
 }
 
+// -------- Render results --------
+
 function renderResults(data) {
+    const modelName = data.model_name || modelSelect.value;
+
+    document.getElementById("results-label").textContent =
+        `${modelName} \u2014 Prediction Ready`;
+    document.getElementById("metrics-heading").textContent =
+        `${modelName} Evaluation`;
+
     resultTicker.textContent = data.ticker;
     resultSummary.textContent = data.summary;
     resultLatestClose.textContent = formatCurrency(data.latest_close);
@@ -169,11 +216,14 @@ function renderResults(data) {
     resultsSection.classList.remove("hidden");
 }
 
+// -------- Form submit --------
+
 form.addEventListener("submit", async (event) => {
     event.preventDefault();
 
     const ticker = tickerInput.value.trim().toUpperCase();
     tickerInput.value = ticker;
+    const modelName = modelSelect.value;
 
     if (!ticker) {
         clearFeedback();
@@ -189,7 +239,7 @@ form.addEventListener("submit", async (event) => {
             headers: {
                 "Content-Type": "application/json",
             },
-            body: JSON.stringify({ ticker }),
+            body: JSON.stringify({ ticker, model_name: modelName }),
         });
 
         let data = {};

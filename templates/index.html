@@ -1,44 +1,53 @@
 {% extends "base.html" %}
 
-{% block title %}Model 1 — 30-Day Stock Predictor{% endblock %}
+{% block title %}30-Day Stock Predictor{% endblock %}
 
 {% block content %}
 <section class="card">
-    <p class="eyebrow">Model 1 &mdash; XGBoost</p>
+    <p class="eyebrow" id="model-eyebrow">Model 1 &mdash; XGBoost</p>
     <h1>30-Day Stock Predictor</h1>
     <p class="description">
-        Enter a stock ticker to download historical data, train <strong>Model 1</strong>,
-        and estimate the next 30-day return.
+        Choose a model, enter a stock ticker, and get a 30-day return prediction.
         If the ticker is on your <a href="/watchlist">watchlist</a>, the prediction
         will be saved automatically.
     </p>
 
     <form id="predict-form" class="predict-form">
-        <label for="ticker">Ticker Symbol</label>
-        <div class="input-row">
-            <input
-                id="ticker"
-                name="ticker"
-                type="text"
-                placeholder="AAPL"
-                maxlength="10"
-                autocomplete="off"
-            >
-            <button id="predict-button" type="submit">Run Prediction</button>
+        <div class="form-field">
+            <label for="model-select">Model</label>
+            <select id="model-select" class="form-select">
+                <option value="Model 1">Model 1 &mdash; Stock Technicals</option>
+                <option value="Model 2">Model 2 &mdash; Stock + Market Context (SPY &amp; VIX)</option>
+            </select>
         </div>
-        <p class="hint">Examples: AAPL, TSLA, MSFT, NVDA, BRK-B</p>
+
+        <div class="form-field">
+            <label for="ticker">Ticker Symbol</label>
+            <div class="input-row">
+                <input
+                    id="ticker"
+                    name="ticker"
+                    type="text"
+                    placeholder="AAPL"
+                    maxlength="10"
+                    autocomplete="off"
+                >
+                <button id="predict-button" type="submit">Run Prediction</button>
+            </div>
+            <p class="hint">Examples: AAPL, TSLA, MSFT, NVDA, BRK-B</p>
+        </div>
     </form>
 
     <section id="loading-section" class="panel hidden" aria-live="polite">
         <div class="status-row">
-            <span class="status-title">Generating Model 1 prediction&hellip;</span>
+            <span class="status-title" id="loading-title">Generating prediction&hellip;</span>
             <span id="progress-label">0%</span>
         </div>
         <div class="progress-track">
             <div id="progress-bar" class="progress-bar"></div>
         </div>
-        <p class="panel-note">
-            Downloading data, preparing features, training Model 1, and building the forecast.
+        <p class="panel-note" id="loading-note">
+            Downloading data, preparing features, training the model, and building the forecast.
         </p>
     </section>
 
@@ -47,7 +56,7 @@
     <section id="results-section" class="panel hidden" aria-live="polite">
         <div class="results-header">
             <div>
-                <p class="results-label">Model 1 &mdash; Prediction Ready</p>
+                <p class="results-label" id="results-label">Prediction Ready</p>
                 <h2 id="result-ticker">AAPL</h2>
                 <p id="result-summary" class="summary"></p>
             </div>
@@ -70,7 +79,7 @@
         </div>
 
         <div class="metrics">
-            <h3>Model 1 Evaluation</h3>
+            <h3 id="metrics-heading">Model Evaluation</h3>
             <div class="metrics-grid">
                 <article class="metric-box">
                     <span class="metric-label">MAE</span>

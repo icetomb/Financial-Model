@@ -4,6 +4,7 @@
 
 const perfGrid = document.getElementById("perf-grid");
 const perfEmpty = document.getElementById("perf-empty");
+const perfHeading = document.getElementById("perf-heading");
 
 const predictionsTable = document.getElementById("predictions-table");
 const predictionsBody = document.getElementById("predictions-body");
@@ -12,6 +13,7 @@ const predictionsEmpty = document.getElementById("predictions-empty");
 const evaluateBtn = document.getElementById("evaluate-btn");
 const evaluateStatus = document.getElementById("evaluate-status");
 
+const filterModel = document.getElementById("filter-model");
 const filterStatus = document.getElementById("filter-status");
 const filterTicker = document.getElementById("filter-ticker");
 
@@ -75,14 +77,36 @@ function toneClass(value) {
     return "";
 }
 
+function modelBadge(modelName) {
+    const cls = modelName === "Model 2" ? "badge-model2" : "badge-model1";
+    return `<span class="model-badge ${cls}">${modelName}</span>`;
+}
+
 // -------- Performance summary --------
 
 async function loadPerformance() {
+    const selectedModel = filterModel.value;
+
+    // When "All Models" is selected, hide performance (mixed stats aren't meaningful)
+    if (!selectedModel) {
+        perfHeading.textContent = "Performance Summary";
+        perfEmpty.textContent =
+            "Select a specific model from the filter to see performance metrics.";
+        perfEmpty.classList.remove("hidden");
+        perfGrid.classList.add("hidden");
+        return;
+    }
+
     try {
-        const res = await fetch("/api/performance?model=Model+1");
+        const res = await fetch(
+            `/api/performance?model=${encodeURIComponent(selectedModel)}`
+        );
         const perf = await res.json();
 
+        perfHeading.textContent = `${selectedModel} \u2014 Performance Summary`;
+
         if (perf.total_predictions === 0) {
+            perfEmpty.textContent = `No ${selectedModel} predictions recorded yet.`;
             perfEmpty.classList.remove("hidden");
             perfGrid.classList.add("hidden");
             return;
@@ -118,10 +142,14 @@ async function loadPredictions() {
 }
 
 function renderPredictions() {
+    const modelVal = filterModel.value;
     const statusVal = filterStatus.value;
     const tickerVal = filterTicker.value.trim().toUpperCase();
 
     let filtered = allPredictions;
+    if (modelVal) {
+        filtered = filtered.filter((p) => p.model_name === modelVal);
+    }
     if (statusVal) {
         filtered = filtered.filter((p) => p.status === statusVal);
     }
@@ -143,6 +171,7 @@ function renderPredictions() {
     filtered.forEach((p) => {
         const tr = document.createElement("tr");
         tr.innerHTML = `
+            <td>${modelBadge(p.model_name)}</td>
             <td><strong>${p.ticker}</strong></td>
             <td>${p.prediction_date}</td>
             <td>${formatCurrency(p.latest_close)}</td>
@@ -210,6 +239,10 @@ evaluateBtn.addEventListener("click", async () => {
 
 // -------- Filters --------
 
+filterModel.addEventListener("change", () => {
+    loadPerformance();
+    renderPredictions();
+});
 filterStatus.addEventListener("change", renderPredictions);
 filterTicker.addEventListener("input", renderPredictions);
 

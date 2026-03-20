@@ -8,7 +8,7 @@
     <h1>Tracked Stocks</h1>
     <p class="description">
         Add tickers you want to track over time.
-        Run <strong>Model 1</strong> predictions on watchlist stocks to build prediction history.
+        Run predictions on watchlist stocks to build prediction history.
     </p>
 
     <!-- Add ticker form -->
@@ -32,7 +32,13 @@
 
     <!-- Watchlist table -->
     <section id="watchlist-section" class="panel" style="margin-top:22px;">
-        <h3 style="margin:0 0 14px;">Your Watchlist</h3>
+        <div class="section-header">
+            <h3 style="margin:0;">Your Watchlist</h3>
+            <select id="watchlist-model" class="filter-select">
+                <option value="Model 1">Model 1</option>
+                <option value="Model 2">Model 2</option>
+            </select>
+        </div>
 
         <div id="watchlist-empty" class="empty-state">
             No stocks on your watchlist yet. Add a ticker above to get started.
@@ -59,7 +65,7 @@
 <div id="prediction-overlay" class="overlay hidden">
     <div class="overlay-content card">
         <div class="overlay-header">
-            <h3>Model 1 Prediction Saved</h3>
+            <h3><span id="overlay-model-name">Model 1</span> Prediction Saved</h3>
             <button id="close-overlay" class="close-btn">&times;</button>
         </div>
         <div id="overlay-body"></div>

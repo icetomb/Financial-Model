@@ -7,7 +7,16 @@ import yfinance as yf
 from flask import Flask, jsonify, render_template, request
 
 import database as db
-from models.model_1 import PredictionError, build_prediction
+from models.model_1 import PredictionError
+from models.model_1 import build_prediction as build_prediction_m1
+from models.model_2 import build_prediction as build_prediction_m2
+
+# Maps model names to their build_prediction functions.
+# Adding a future Model 3 means importing it and adding one entry here.
+MODEL_BUILDERS = {
+    "Model 1": build_prediction_m1,
+    "Model 2": build_prediction_m2,
+}
 
 
 def _return_direction(value: float) -> str:
@@ -17,6 +26,12 @@ def _return_direction(value: float) -> str:
     if value < 0:
         return "down"
     return "neutral"
+
+
+def _run_model(model_name: str, ticker: str) -> dict:
+    """Look up the correct model builder and run it."""
+    build_fn = MODEL_BUILDERS.get(model_name, build_prediction_m1)
+    return build_fn(ticker)
 
 
 def create_app() -> Flask:
@@ -42,16 +57,17 @@ def create_app() -> Flask:
         return render_template("predictions.html", active_page="predictions")
 
     # ------------------------------------------------------------------
-    # Predict API  (original endpoint — now also saves for watchlist stocks)
+    # Predict API  (supports model selection via model_name in payload)
     # ------------------------------------------------------------------
 
     @app.post("/predict")
     def predict():
         payload = request.get_json(silent=True) or {}
         ticker = payload.get("ticker", "")
+        model_name = payload.get("model_name", "Model 1")
 
         try:
-            result = build_prediction(ticker)
+            result = _run_model(model_name, ticker)
         except PredictionError as exc:
             return jsonify({"error": str(exc)}), 400
         except Exception:
@@ -68,11 +84,14 @@ def create_app() -> Flask:
                 500,
             )
 
+        # Tag the result with the model that produced it
+        result["model_name"] = model_name
+
         # If the ticker is on the watchlist, persist the prediction automatically
         watchlist_item = db.get_watchlist_item_by_ticker(result["ticker"])
         if watchlist_item:
             db.save_prediction(
-                model_name="Model 1",
+                model_name=model_name,
                 ticker=result["ticker"],
                 prediction_date=result["latest_data_date"],
                 latest_close=result["latest_close"],
@@ -146,7 +165,7 @@ def create_app() -> Flask:
         model_name = payload.get("model_name", "Model 1")
 
         try:
-            result = build_prediction(ticker)
+            result = _run_model(model_name, ticker)
         except PredictionError as exc:
             return jsonify({"error": str(exc)}), 400
         except Exception:

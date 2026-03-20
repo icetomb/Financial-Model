@@ -715,3 +715,70 @@ button:disabled {
 .description a:hover {
     color: var(--accent-dark);
 }
+
+/* ==========================================================================
+   Form select (model selector on predict page)
+   ========================================================================== */
+
+.form-field {
+    margin-bottom: 16px;
+}
+
+.form-field label {
+    display: block;
+    font-weight: 700;
+    margin-bottom: 6px;
+}
+
+.form-select {
+    width: 100%;
+    padding: 13px 16px;
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    font: inherit;
+    font-size: 1rem;
+    color: var(--text);
+    background: #ffffff;
+    cursor: pointer;
+    appearance: auto;
+}
+
+.form-select:focus {
+    outline: 3px solid rgba(35, 104, 196, 0.16);
+    border-color: var(--accent);
+}
+
+/* ==========================================================================
+   Section header (heading + inline control, e.g. watchlist + model select)
+   ========================================================================== */
+
+.section-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 14px;
+}
+
+/* ==========================================================================
+   Model badges (predictions table)
+   ========================================================================== */
+
+.model-badge {
+    display: inline-block;
+    padding: 3px 9px;
+    border-radius: 999px;
+    font-size: 0.76rem;
+    font-weight: 700;
+    white-space: nowrap;
+}
+
+.badge-model1 {
+    background: #eef3ff;
+    color: var(--accent);
+}
+
+.badge-model2 {
+    background: #f3eeff;
+    color: #6b3fa0;
+}
