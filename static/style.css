@@ -1145,3 +1145,12 @@ button:disabled {
     color: var(--negative);
     font-weight: 700;
 }
+
+.log-skip {
+    color: var(--muted);
+    font-weight: 700;
+}
+
+.value-muted {
+    color: var(--muted);
+}

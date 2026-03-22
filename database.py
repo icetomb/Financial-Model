@@ -138,6 +138,17 @@ def remove_from_watchlist(item_id: int) -> None:
 # Prediction CRUD
 # ---------------------------------------------------------------------------
 
+def prediction_exists(model_name: str, ticker: str, prediction_date: str) -> bool:
+    """Return True if a prediction already exists for this model+ticker+date."""
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT 1 FROM predictions WHERE model_name = ? AND ticker = ? AND prediction_date = ?",
+        (model_name, ticker.upper(), prediction_date),
+    ).fetchone()
+    conn.close()
+    return row is not None
+
+
 def save_prediction(
     model_name: str,
     ticker: str,

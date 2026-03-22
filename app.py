@@ -87,13 +87,14 @@ def create_app() -> Flask:
         # Tag the result with the model that produced it
         result["model_name"] = model_name
 
-        # If the ticker is on the watchlist, persist the prediction automatically
+        # If the ticker is on the watchlist, persist (skip if duplicate)
         watchlist_item = db.get_watchlist_item_by_ticker(result["ticker"])
-        if watchlist_item:
+        pred_date = result["latest_data_date"]
+        if watchlist_item and not db.prediction_exists(model_name, result["ticker"], pred_date):
             db.save_prediction(
                 model_name=model_name,
                 ticker=result["ticker"],
-                prediction_date=result["latest_data_date"],
+                prediction_date=pred_date,
                 latest_close=result["latest_close"],
                 predicted_return=result["predicted_return"],
                 predicted_price=result["estimated_price_30d"],
@@ -172,10 +173,17 @@ def create_app() -> Flask:
             app.logger.exception("Unexpected error while generating prediction")
             return jsonify({"error": "Something went wrong. Please try again."}), 500
 
+        pred_date = result["latest_data_date"]
+        if db.prediction_exists(model_name, result["ticker"], pred_date):
+            return jsonify({
+                "error": f"{model_name} prediction for {result['ticker']} on {pred_date} already exists.",
+                "duplicate": True,
+            }), 409
+
         saved = db.save_prediction(
             model_name=model_name,
             ticker=result["ticker"],
-            prediction_date=result["latest_data_date"],
+            prediction_date=pred_date,
             latest_close=result["latest_close"],
             predicted_return=result["predicted_return"],
             predicted_price=result["estimated_price_30d"],

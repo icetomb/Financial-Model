@@ -282,6 +282,7 @@ runAllBtn.addEventListener("click", async () => {
     const totalJobs = tickers.length * knownModels.length;
     let completed = 0;
     let successes = 0;
+    let skipped = 0;
     let failures = 0;
 
     runAllBtn.disabled = true;
@@ -303,7 +304,11 @@ runAllBtn.addEventListener("click", async () => {
                     body: JSON.stringify({ ticker, model_name: model }),
                 });
                 const data = await res.json();
-                if (!res.ok) throw new Error(data.error || "Failed");
+                if (!res.ok) {
+                    const err = new Error(data.error || "Failed");
+                    err.duplicate = !!data.duplicate;
+                    throw err;
+                }
                 return { model, data };
             })
         );
@@ -320,6 +325,11 @@ runAllBtn.addEventListener("click", async () => {
                 entry.innerHTML = `<span class="log-success">\u2713</span> 
                     <strong>${ticker}</strong> \u00b7 ${model} \u2014 
                     <span class="${toneClass(ret)}">${formatPercent(ret)}</span>`;
+            } else if (r.reason && r.reason.duplicate) {
+                skipped++;
+                entry.innerHTML = `<span class="log-skip">\u2013</span> 
+                    <strong>${ticker}</strong> \u00b7 ${model} \u2014 
+                    <span class="value-muted">Already exists, skipped</span>`;
             } else {
                 failures++;
                 entry.innerHTML = `<span class="log-fail">\u2717</span> 
@@ -336,7 +346,10 @@ runAllBtn.addEventListener("click", async () => {
         });
     }
 
-    runAllText.textContent = `Done \u2014 ${successes} succeeded, ${failures} failed`;
+    const parts = [`${successes} succeeded`];
+    if (skipped > 0) parts.push(`${skipped} skipped`);
+    if (failures > 0) parts.push(`${failures} failed`);
+    runAllText.textContent = `Done \u2014 ${parts.join(", ")}`;
     runAllBtn.disabled = false;
 });
 
