@@ -7,55 +7,15 @@
     <p class="eyebrow">Model Performance</p>
     <h1>Prediction History</h1>
     <p class="description">
-        Review saved predictions and track model accuracy over time.
+        Review saved predictions and compare model accuracy side by side.
         Predictions are evaluated after their 30-day horizon has passed.
     </p>
 
-    <!-- ── Performance summary ── -->
-    <section id="performance-section" class="panel" style="margin-top:22px;">
-        <h3 style="margin:0 0 14px;" id="perf-heading">Performance Summary</h3>
-
-        <div id="perf-empty" class="empty-state">
-            Select a specific model from the filter below to see performance metrics.
-        </div>
-
-        <div id="perf-grid" class="results-grid perf-grid hidden">
-            <article class="result-box">
-                <span class="box-label">Total Predictions</span>
-                <strong id="perf-total">0</strong>
-            </article>
-            <article class="result-box">
-                <span class="box-label">Completed</span>
-                <strong id="perf-completed">0</strong>
-            </article>
-            <article class="result-box">
-                <span class="box-label">Pending</span>
-                <strong id="perf-pending">0</strong>
-            </article>
-            <article class="result-box">
-                <span class="box-label">Correct</span>
-                <strong id="perf-correct" class="value-positive">0</strong>
-            </article>
-            <article class="result-box">
-                <span class="box-label">Incorrect</span>
-                <strong id="perf-incorrect" class="value-negative">0</strong>
-            </article>
-            <article class="result-box">
-                <span class="box-label">Direction Accuracy</span>
-                <strong id="perf-accuracy">0%</strong>
-            </article>
-            <article class="result-box">
-                <span class="box-label">Avg Prediction Error</span>
-                <strong id="perf-avg-error">0%</strong>
-            </article>
-            <article class="result-box">
-                <span class="box-label">Avg Predicted Return</span>
-                <strong id="perf-avg-predicted">0%</strong>
-            </article>
-            <article class="result-box">
-                <span class="box-label">Avg Actual Return</span>
-                <strong id="perf-avg-actual">0%</strong>
-            </article>
+    <!-- ── Performance comparison (one card per model, built by JS) ── -->
+    <section class="panel" style="margin-top:22px;">
+        <h3 style="margin:0 0 14px;">Performance Comparison</h3>
+        <div id="perf-container" class="perf-comparison">
+            <div class="empty-state">Loading&hellip;</div>
         </div>
     </section>
 
@@ -72,10 +32,9 @@
         <h3 style="margin:0 0 14px;">All Predictions</h3>
 
         <div class="filter-row">
+            <!-- Model options populated dynamically by JS -->
             <select id="filter-model" class="filter-select">
                 <option value="">All Models</option>
-                <option value="Model 1">Model 1</option>
-                <option value="Model 2">Model 2</option>
             </select>
             <select id="filter-status" class="filter-select">
                 <option value="">All Statuses</option>

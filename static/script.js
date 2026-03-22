@@ -1,11 +1,10 @@
 // ---------------------------------------------------------------------------
-// Predict page – runs Model 1 or Model 2 predictions
+// Predict page – runs both Model 1 and Model 2 in parallel for comparison
 // ---------------------------------------------------------------------------
 
 const form = document.getElementById("predict-form");
 const tickerInput = document.getElementById("ticker");
 const predictButton = document.getElementById("predict-button");
-const modelSelect = document.getElementById("model-select");
 
 const loadingSection = document.getElementById("loading-section");
 const errorSection = document.getElementById("error-section");
@@ -14,44 +13,8 @@ const resultsSection = document.getElementById("results-section");
 const progressBar = document.getElementById("progress-bar");
 const progressLabel = document.getElementById("progress-label");
 
-const resultTicker = document.getElementById("result-ticker");
-const resultSummary = document.getElementById("result-summary");
-const resultOutlook = document.getElementById("result-outlook");
-const resultLatestClose = document.getElementById("result-latest-close");
-const resultPredictedReturn = document.getElementById("result-predicted-return");
-const resultEstimatedPrice = document.getElementById("result-estimated-price");
-const resultMae = document.getElementById("metric-mae");
-const resultRmse = document.getElementById("metric-rmse");
-const resultR2 = document.getElementById("metric-r2");
-const resultDirectionAccuracy = document.getElementById("metric-direction-accuracy");
-const resultDataNote = document.getElementById("result-data-note");
-
 let progressTimer = null;
 let progressValue = 0;
-
-// -- Model metadata for dynamic UI text --
-const MODEL_INFO = {
-    "Model 1": {
-        eyebrow: "Model 1 \u2014 XGBoost",
-        loadingTitle: "Generating Model 1 prediction\u2026",
-        loadingNote:
-            "Downloading data, preparing features, training Model 1, and building the forecast.",
-    },
-    "Model 2": {
-        eyebrow: "Model 2 \u2014 XGBoost + Market Context",
-        loadingTitle: "Generating Model 2 prediction\u2026",
-        loadingNote:
-            "Downloading stock, SPY & VIX data, preparing features, training Model 2, and building the forecast.",
-    },
-};
-
-// Update header text when the model selector changes
-function updateModelLabels() {
-    const info = MODEL_INFO[modelSelect.value] || MODEL_INFO["Model 1"];
-    document.getElementById("model-eyebrow").textContent = info.eyebrow;
-}
-
-modelSelect.addEventListener("change", updateModelLabels);
 
 // -------- Progress helpers --------
 
@@ -68,14 +31,7 @@ function clearProgressTimer() {
     }
 }
 
-function clearResultStyles() {
-    resultPredictedReturn.classList.remove("value-positive", "value-negative", "value-neutral");
-    resultEstimatedPrice.classList.remove("value-positive", "value-negative", "value-neutral");
-    resultOutlook.className = "outlook-badge";
-}
-
 function clearFeedback() {
-    clearResultStyles();
     errorSection.textContent = "";
     errorSection.classList.add("hidden");
     resultsSection.classList.add("hidden");
@@ -84,24 +40,16 @@ function clearFeedback() {
 function startLoading() {
     clearFeedback();
     setProgress(0);
-
-    const info = MODEL_INFO[modelSelect.value] || MODEL_INFO["Model 1"];
-    document.getElementById("loading-title").textContent = info.loadingTitle;
-    document.getElementById("loading-note").textContent = info.loadingNote;
-
     loadingSection.classList.remove("hidden");
     predictButton.disabled = true;
     predictButton.textContent = "Working...";
 
     clearProgressTimer();
     progressTimer = window.setInterval(() => {
-        if (progressValue >= 92) {
-            return;
-        }
-
-        const step = progressValue < 45 ? 7 : progressValue < 75 ? 4 : 1.5;
+        if (progressValue >= 92) return;
+        const step = progressValue < 45 ? 5 : progressValue < 75 ? 3 : 1;
         setProgress(Math.min(progressValue + step, 92));
-    }, 180);
+    }, 250);
 }
 
 async function stopLoading() {
@@ -110,7 +58,7 @@ async function stopLoading() {
     await new Promise((resolve) => window.setTimeout(resolve, 220));
     loadingSection.classList.add("hidden");
     predictButton.disabled = false;
-    predictButton.textContent = "Run Prediction";
+    predictButton.textContent = "Run Both Models";
 }
 
 function showError(message) {
@@ -134,86 +82,88 @@ function formatPercent(value) {
 }
 
 function formatMetric(value) {
-    if (value === null || value === undefined || Number.isNaN(value)) {
-        return "N/A";
-    }
-
+    if (value === null || value === undefined || Number.isNaN(value)) return "N/A";
     return value.toFixed(4);
 }
 
 function formatAccuracy(value) {
-    if (value === null || value === undefined || Number.isNaN(value)) {
-        return "N/A";
-    }
-
+    if (value === null || value === undefined || Number.isNaN(value)) return "N/A";
     return `${(value * 100).toFixed(1)}%`;
 }
 
 function setValueTone(element, value) {
     element.classList.remove("value-positive", "value-negative", "value-neutral");
-
-    if (value > 0) {
-        element.classList.add("value-positive");
-        return;
-    }
-
-    if (value < 0) {
-        element.classList.add("value-negative");
-        return;
-    }
-
-    element.classList.add("value-neutral");
+    if (value > 0) element.classList.add("value-positive");
+    else if (value < 0) element.classList.add("value-negative");
+    else element.classList.add("value-neutral");
 }
 
-// -------- Render results --------
+function setOutlookBadge(element, predicted_return, outlook) {
+    element.className = "outlook-badge";
+    element.textContent = `${outlook} outlook`;
+    if (predicted_return > 0) element.classList.add("outlook-positive");
+    else if (predicted_return < 0) element.classList.add("outlook-negative");
+    else element.classList.add("outlook-neutral");
+}
 
-function renderResults(data) {
-    const modelName = data.model_name || modelSelect.value;
+// -------- Render one model column --------
 
-    document.getElementById("results-label").textContent =
-        `${modelName} \u2014 Prediction Ready`;
-    document.getElementById("metrics-heading").textContent =
-        `${modelName} Evaluation`;
+function renderModelColumn(prefix, data) {
+    const errorEl = document.getElementById(`${prefix}-error`);
+    const resultsEl = document.getElementById(`${prefix}-results`);
 
-    resultTicker.textContent = data.ticker;
-    resultSummary.textContent = data.summary;
-    resultLatestClose.textContent = formatCurrency(data.latest_close);
-    resultPredictedReturn.textContent = formatPercent(data.predicted_return);
-    resultEstimatedPrice.textContent = formatCurrency(data.estimated_price_30d);
-
-    setValueTone(resultPredictedReturn, data.predicted_return);
-    setValueTone(resultEstimatedPrice, data.predicted_return);
-
-    resultOutlook.textContent = `${data.outlook} outlook`;
-    resultOutlook.classList.add(
-        data.predicted_return > 0
-            ? "outlook-positive"
-            : data.predicted_return < 0
-              ? "outlook-negative"
-              : "outlook-neutral"
-    );
-
-    const metrics = data.metrics || {};
-    resultMae.textContent = formatMetric(metrics.mae);
-    resultRmse.textContent = formatMetric(metrics.rmse);
-    resultR2.textContent = formatMetric(metrics.r2);
-    resultDirectionAccuracy.textContent = formatAccuracy(metrics.direction_accuracy);
-
-    resultDataNote.textContent =
-        `Latest market data used: ${data.latest_data_date}. ` +
-        `Train/Test samples: ${data.samples.train}/${data.samples.test}.`;
-
-    // Show a note when the prediction was auto-saved for a watchlist ticker
-    const savedNote = document.getElementById("saved-note");
-    if (savedNote) {
-        if (data.saved_to_history) {
-            savedNote.classList.remove("hidden");
-        } else {
-            savedNote.classList.add("hidden");
-        }
+    if (data.error) {
+        errorEl.textContent = data.error;
+        errorEl.classList.remove("hidden");
+        resultsEl.style.opacity = "0.3";
+        return;
     }
 
-    resultsSection.classList.remove("hidden");
+    errorEl.classList.add("hidden");
+    resultsEl.style.opacity = "1";
+
+    setOutlookBadge(
+        document.getElementById(`${prefix}-outlook`),
+        data.predicted_return,
+        data.outlook
+    );
+    document.getElementById(`${prefix}-summary`).textContent = data.summary;
+
+    const returnEl = document.getElementById(`${prefix}-return`);
+    returnEl.textContent = formatPercent(data.predicted_return);
+    setValueTone(returnEl, data.predicted_return);
+
+    const priceEl = document.getElementById(`${prefix}-price`);
+    priceEl.textContent = formatCurrency(data.estimated_price_30d);
+    setValueTone(priceEl, data.predicted_return);
+
+    const metrics = data.metrics || {};
+    document.getElementById(`${prefix}-mae`).textContent = formatMetric(metrics.mae);
+    document.getElementById(`${prefix}-rmse`).textContent = formatMetric(metrics.rmse);
+    document.getElementById(`${prefix}-r2`).textContent = formatMetric(metrics.r2);
+    document.getElementById(`${prefix}-dir`).textContent = formatAccuracy(metrics.direction_accuracy);
+
+    document.getElementById(`${prefix}-data-note`).textContent =
+        `Data: ${data.latest_data_date}. Samples: ${data.samples.train}/${data.samples.test}.`;
+}
+
+// -------- Fetch one model prediction --------
+
+async function fetchPrediction(ticker, modelName) {
+    try {
+        const response = await fetch("/predict", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ ticker, model_name: modelName }),
+        });
+        const data = await response.json();
+        if (!response.ok) {
+            return { error: data.error || `${modelName} failed.` };
+        }
+        return data;
+    } catch {
+        return { error: `${modelName}: network error.` };
+    }
 }
 
 // -------- Form submit --------
@@ -223,7 +173,6 @@ form.addEventListener("submit", async (event) => {
 
     const ticker = tickerInput.value.trim().toUpperCase();
     tickerInput.value = ticker;
-    const modelName = modelSelect.value;
 
     if (!ticker) {
         clearFeedback();
@@ -233,34 +182,36 @@ form.addEventListener("submit", async (event) => {
 
     startLoading();
 
-    try {
-        const response = await fetch("/predict", {
-            method: "POST",
-            headers: {
-                "Content-Type": "application/json",
-            },
-            body: JSON.stringify({ ticker, model_name: modelName }),
-        });
+    // Run both models in parallel
+    const [m1Result, m2Result] = await Promise.all([
+        fetchPrediction(ticker, "Model 1"),
+        fetchPrediction(ticker, "Model 2"),
+    ]);
 
-        let data = {};
+    await stopLoading();
 
-        try {
-            data = await response.json();
-        } catch (error) {
-            data = {};
-        }
-
-        await stopLoading();
-
-        if (!response.ok) {
-            throw new Error(data.error || "Could not generate a prediction for that ticker.");
-        }
-
-        renderResults(data);
-    } catch (error) {
-        await stopLoading();
-        showError(
-            error.message || "Something went wrong while generating the prediction."
-        );
+    // If both failed, show a single error
+    if (m1Result.error && m2Result.error) {
+        showError(m1Result.error);
+        return;
     }
+
+    // Shared header — use whichever model succeeded for ticker / close price
+    const successResult = m1Result.error ? m2Result : m1Result;
+    document.getElementById("result-ticker").textContent = successResult.ticker;
+    document.getElementById("result-latest-close").textContent =
+        formatCurrency(successResult.latest_close);
+
+    // Render each model column
+    renderModelColumn("m1", m1Result);
+    renderModelColumn("m2", m2Result);
+
+    // Saved-to-history note (check if either result was auto-saved)
+    const savedNote = document.getElementById("saved-note");
+    if (savedNote) {
+        const anySaved = m1Result.saved_to_history || m2Result.saved_to_history;
+        savedNote.classList.toggle("hidden", !anySaved);
+    }
+
+    resultsSection.classList.remove("hidden");
 });

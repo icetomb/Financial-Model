@@ -259,6 +259,11 @@ def create_app() -> Flask:
             }
         )
 
+    @app.get("/api/models")
+    def api_get_models():
+        """Return the list of available model names (drives dynamic UI)."""
+        return jsonify(list(MODEL_BUILDERS.keys()))
+
     @app.get("/api/performance")
     def api_get_performance():
         model_name = request.args.get("model", "Model 1")

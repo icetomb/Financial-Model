@@ -261,6 +261,25 @@ overlay.addEventListener("click", (e) => {
     if (e.target === overlay) overlay.classList.add("hidden");
 });
 
+// -------- Populate model selector dynamically --------
+
+async function loadModels() {
+    try {
+        const res = await fetch("/api/models");
+        const models = await res.json();
+        watchlistModel.innerHTML = "";
+        models.forEach((m) => {
+            const opt = document.createElement("option");
+            opt.value = m;
+            opt.textContent = m;
+            watchlistModel.appendChild(opt);
+        });
+    } catch {
+        watchlistModel.innerHTML = '<option value="Model 1">Model 1</option>';
+    }
+}
+
 // -------- Init --------
 
+loadModels();
 loadWatchlist();

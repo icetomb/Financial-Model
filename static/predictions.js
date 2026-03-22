@@ -1,10 +1,8 @@
 // ---------------------------------------------------------------------------
-// Predictions page – shows prediction history, evaluation, and performance
+// Predictions page – shows all-model performance comparison + prediction history
 // ---------------------------------------------------------------------------
 
-const perfGrid = document.getElementById("perf-grid");
-const perfEmpty = document.getElementById("perf-empty");
-const perfHeading = document.getElementById("perf-heading");
+const perfContainer = document.getElementById("perf-container");
 
 const predictionsTable = document.getElementById("predictions-table");
 const predictionsBody = document.getElementById("predictions-body");
@@ -18,6 +16,7 @@ const filterStatus = document.getElementById("filter-status");
 const filterTicker = document.getElementById("filter-ticker");
 
 let allPredictions = [];
+let knownModels = [];
 
 // -------- Helpers --------
 
@@ -78,55 +77,109 @@ function toneClass(value) {
 }
 
 function modelBadge(modelName) {
-    const cls = modelName === "Model 2" ? "badge-model2" : "badge-model1";
-    return `<span class="model-badge ${cls}">${modelName}</span>`;
+    const num = modelName.replace(/\D/g, "") || "1";
+    return `<span class="model-badge badge-model${num}">${modelName}</span>`;
 }
 
-// -------- Performance summary --------
+// -------- Discover available models and populate filter --------
 
-async function loadPerformance() {
-    const selectedModel = filterModel.value;
+async function loadModels() {
+    try {
+        const res = await fetch("/api/models");
+        knownModels = await res.json();
+    } catch {
+        knownModels = ["Model 1", "Model 2"];
+    }
 
-    // When "All Models" is selected, hide performance (mixed stats aren't meaningful)
-    if (!selectedModel) {
-        perfHeading.textContent = "Performance Summary";
-        perfEmpty.textContent =
-            "Select a specific model from the filter to see performance metrics.";
-        perfEmpty.classList.remove("hidden");
-        perfGrid.classList.add("hidden");
+    // Populate the model filter dropdown dynamically
+    filterModel.innerHTML = '<option value="">All Models</option>';
+    knownModels.forEach((m) => {
+        const opt = document.createElement("option");
+        opt.value = m;
+        opt.textContent = m;
+        filterModel.appendChild(opt);
+    });
+}
+
+// -------- Performance comparison (one card per model) --------
+
+async function loadAllPerformance() {
+    // Fetch performance for every model in parallel
+    const results = await Promise.all(
+        knownModels.map(async (model) => {
+            try {
+                const res = await fetch(
+                    `/api/performance?model=${encodeURIComponent(model)}`
+                );
+                return await res.json();
+            } catch {
+                return { model_name: model, total_predictions: 0 };
+            }
+        })
+    );
+
+    perfContainer.innerHTML = "";
+
+    // Check if any model has data
+    const anyData = results.some((p) => p.total_predictions > 0);
+    if (!anyData) {
+        perfContainer.innerHTML =
+            '<div class="empty-state">No predictions recorded yet.</div>';
         return;
     }
 
-    try {
-        const res = await fetch(
-            `/api/performance?model=${encodeURIComponent(selectedModel)}`
-        );
-        const perf = await res.json();
-
-        perfHeading.textContent = `${selectedModel} \u2014 Performance Summary`;
+    // Build a card for each model
+    results.forEach((perf) => {
+        const card = document.createElement("div");
+        card.className = "perf-card";
 
         if (perf.total_predictions === 0) {
-            perfEmpty.textContent = `No ${selectedModel} predictions recorded yet.`;
-            perfEmpty.classList.remove("hidden");
-            perfGrid.classList.add("hidden");
-            return;
+            card.innerHTML = `
+                <div class="perf-card-header">
+                    <h4>${perf.model_name}</h4>
+                </div>
+                <div class="empty-state" style="padding:10px 0;">No predictions yet.</div>
+            `;
+        } else {
+            card.innerHTML = `
+                <div class="perf-card-header">
+                    <h4>${perf.model_name}</h4>
+                    <span class="perf-card-accuracy">${perf.direction_accuracy}%</span>
+                </div>
+                <div class="perf-card-grid">
+                    <div class="perf-row">
+                        <span>Total</span><strong>${perf.total_predictions}</strong>
+                    </div>
+                    <div class="perf-row">
+                        <span>Completed</span><strong>${perf.completed_predictions}</strong>
+                    </div>
+                    <div class="perf-row">
+                        <span>Pending</span><strong>${perf.pending_predictions}</strong>
+                    </div>
+                    <div class="perf-row">
+                        <span>Correct</span><strong class="value-positive">${perf.correct_predictions}</strong>
+                    </div>
+                    <div class="perf-row">
+                        <span>Incorrect</span><strong class="value-negative">${perf.incorrect_predictions}</strong>
+                    </div>
+                    <div class="perf-row">
+                        <span>Dir. Accuracy</span><strong>${perf.direction_accuracy}%</strong>
+                    </div>
+                    <div class="perf-row">
+                        <span>Avg Error</span><strong>${perf.avg_prediction_error}%</strong>
+                    </div>
+                    <div class="perf-row">
+                        <span>Avg Predicted</span><strong>${perf.avg_predicted_return}%</strong>
+                    </div>
+                    <div class="perf-row">
+                        <span>Avg Actual</span><strong>${perf.avg_actual_return}%</strong>
+                    </div>
+                </div>
+            `;
         }
 
-        perfEmpty.classList.add("hidden");
-        perfGrid.classList.remove("hidden");
-
-        document.getElementById("perf-total").textContent = perf.total_predictions;
-        document.getElementById("perf-completed").textContent = perf.completed_predictions;
-        document.getElementById("perf-pending").textContent = perf.pending_predictions;
-        document.getElementById("perf-correct").textContent = perf.correct_predictions;
-        document.getElementById("perf-incorrect").textContent = perf.incorrect_predictions;
-        document.getElementById("perf-accuracy").textContent = `${perf.direction_accuracy}%`;
-        document.getElementById("perf-avg-error").textContent = `${perf.avg_prediction_error}%`;
-        document.getElementById("perf-avg-predicted").textContent = `${perf.avg_predicted_return}%`;
-        document.getElementById("perf-avg-actual").textContent = `${perf.avg_actual_return}%`;
-    } catch (err) {
-        console.error("Failed to load performance:", err);
-    }
+        perfContainer.appendChild(card);
+    });
 }
 
 // -------- Predictions table --------
@@ -204,7 +257,7 @@ predictionsBody.addEventListener("click", async (e) => {
     try {
         await fetch(`/api/predictions/${btn.dataset.id}`, { method: "DELETE" });
         loadPredictions();
-        loadPerformance();
+        loadAllPerformance();
     } catch {
         alert("Failed to delete prediction.");
     }
@@ -225,7 +278,7 @@ evaluateBtn.addEventListener("click", async () => {
             evaluateStatus.textContent =
                 `Evaluated ${data.evaluated_count} prediction(s).`;
             loadPredictions();
-            loadPerformance();
+            loadAllPerformance();
         } else {
             evaluateStatus.textContent = "No predictions ready for evaluation yet.";
         }
@@ -237,24 +290,26 @@ evaluateBtn.addEventListener("click", async () => {
     }
 });
 
-// -------- Filters --------
+// -------- Filters (table only — performance always shows all) --------
 
-filterModel.addEventListener("change", () => {
-    loadPerformance();
-    renderPredictions();
-});
+filterModel.addEventListener("change", renderPredictions);
 filterStatus.addEventListener("change", renderPredictions);
 filterTicker.addEventListener("input", renderPredictions);
 
 // -------- Init --------
 
-// Auto-evaluate any overdue predictions on page load, then refresh the data
-fetch("/api/predictions/evaluate", { method: "POST" })
-    .then(() => {
-        loadPerformance();
-        loadPredictions();
-    })
-    .catch(() => {
-        loadPerformance();
-        loadPredictions();
-    });
+async function init() {
+    // Discover models, auto-evaluate, then load everything
+    await loadModels();
+
+    try {
+        await fetch("/api/predictions/evaluate", { method: "POST" });
+    } catch {
+        // evaluation is best-effort
+    }
+
+    loadAllPerformance();
+    loadPredictions();
+}
+
+init();

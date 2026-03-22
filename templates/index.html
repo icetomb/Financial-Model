@@ -4,107 +4,135 @@
 
 {% block content %}
 <section class="card">
-    <p class="eyebrow" id="model-eyebrow">Model 1 &mdash; XGBoost</p>
+    <p class="eyebrow">Model Comparison &mdash; XGBoost</p>
     <h1>30-Day Stock Predictor</h1>
     <p class="description">
-        Choose a model, enter a stock ticker, and get a 30-day return prediction.
-        If the ticker is on your <a href="/watchlist">watchlist</a>, the prediction
+        Enter a stock ticker to run <strong>Model 1</strong> (stock technicals) and
+        <strong>Model 2</strong> (stock + SPY &amp; VIX market context) side by side.
+        If the ticker is on your <a href="/watchlist">watchlist</a>, both predictions
         will be saved automatically.
     </p>
 
     <form id="predict-form" class="predict-form">
-        <div class="form-field">
-            <label for="model-select">Model</label>
-            <select id="model-select" class="form-select">
-                <option value="Model 1">Model 1 &mdash; Stock Technicals</option>
-                <option value="Model 2">Model 2 &mdash; Stock + Market Context (SPY &amp; VIX)</option>
-            </select>
+        <label for="ticker">Ticker Symbol</label>
+        <div class="input-row">
+            <input
+                id="ticker"
+                name="ticker"
+                type="text"
+                placeholder="AAPL"
+                maxlength="10"
+                autocomplete="off"
+            >
+            <button id="predict-button" type="submit">Run Both Models</button>
         </div>
-
-        <div class="form-field">
-            <label for="ticker">Ticker Symbol</label>
-            <div class="input-row">
-                <input
-                    id="ticker"
-                    name="ticker"
-                    type="text"
-                    placeholder="AAPL"
-                    maxlength="10"
-                    autocomplete="off"
-                >
-                <button id="predict-button" type="submit">Run Prediction</button>
-            </div>
-            <p class="hint">Examples: AAPL, TSLA, MSFT, NVDA, BRK-B</p>
-        </div>
+        <p class="hint">Examples: AAPL, TSLA, MSFT, NVDA, BRK-B</p>
     </form>
 
     <section id="loading-section" class="panel hidden" aria-live="polite">
         <div class="status-row">
-            <span class="status-title" id="loading-title">Generating prediction&hellip;</span>
+            <span class="status-title">Running Model 1 and Model 2&hellip;</span>
             <span id="progress-label">0%</span>
         </div>
         <div class="progress-track">
             <div id="progress-bar" class="progress-bar"></div>
         </div>
-        <p class="panel-note" id="loading-note">
-            Downloading data, preparing features, training the model, and building the forecast.
+        <p class="panel-note">
+            Downloading stock, SPY &amp; VIX data, preparing features, training both models,
+            and building forecasts.
         </p>
     </section>
 
     <section id="error-section" class="panel panel-error hidden" aria-live="polite"></section>
 
+    <!-- ── Comparison results ── -->
     <section id="results-section" class="panel hidden" aria-live="polite">
         <div class="results-header">
             <div>
-                <p class="results-label" id="results-label">Prediction Ready</p>
+                <p class="results-label">Comparison Ready</p>
                 <h2 id="result-ticker">AAPL</h2>
-                <p id="result-summary" class="summary"></p>
             </div>
-            <span id="result-outlook" class="outlook-badge">Bullish outlook</span>
-        </div>
-
-        <div class="results-grid">
-            <article class="result-box">
-                <span class="box-label">Latest Close Price</span>
+            <div class="shared-close">
+                <span class="box-label">Latest Close</span>
                 <strong id="result-latest-close">$0.00</strong>
-            </article>
-            <article class="result-box">
-                <span class="box-label">Predicted 30-Day Return</span>
-                <strong id="result-predicted-return">0.00%</strong>
-            </article>
-            <article class="result-box">
-                <span class="box-label">Estimated Price in 30 Days</span>
-                <strong id="result-estimated-price">$0.00</strong>
-            </article>
-        </div>
-
-        <div class="metrics">
-            <h3 id="metrics-heading">Model Evaluation</h3>
-            <div class="metrics-grid">
-                <article class="metric-box">
-                    <span class="metric-label">MAE</span>
-                    <strong id="metric-mae">0.0000</strong>
-                </article>
-                <article class="metric-box">
-                    <span class="metric-label">RMSE</span>
-                    <strong id="metric-rmse">0.0000</strong>
-                </article>
-                <article class="metric-box">
-                    <span class="metric-label">R^2</span>
-                    <strong id="metric-r2">0.0000</strong>
-                </article>
-                <article class="metric-box">
-                    <span class="metric-label">Direction Accuracy</span>
-                    <strong id="metric-direction-accuracy">0.0%</strong>
-                </article>
             </div>
         </div>
 
-        <p id="result-data-note" class="data-note"></p>
+        <div class="comparison-grid">
+            <!-- Model 1 column -->
+            <div class="model-column">
+                <div class="model-column-header">
+                    <h3>Model 1</h3>
+                    <span class="model-subtitle">Stock Technicals</span>
+                </div>
 
-        <!-- Shown when the prediction was auto-saved because the ticker is on the watchlist -->
+                <div id="m1-error" class="panel panel-error hidden"></div>
+
+                <div id="m1-results">
+                    <span id="m1-outlook" class="outlook-badge">—</span>
+                    <p id="m1-summary" class="summary"></p>
+
+                    <div class="compare-stats">
+                        <div class="compare-stat">
+                            <span class="box-label">Predicted Return</span>
+                            <strong id="m1-return">—</strong>
+                        </div>
+                        <div class="compare-stat">
+                            <span class="box-label">Est. Price (30d)</span>
+                            <strong id="m1-price">—</strong>
+                        </div>
+                    </div>
+
+                    <div class="mini-metrics">
+                        <div><span class="metric-label">MAE</span> <strong id="m1-mae">—</strong></div>
+                        <div><span class="metric-label">RMSE</span> <strong id="m1-rmse">—</strong></div>
+                        <div><span class="metric-label">R&sup2;</span> <strong id="m1-r2">—</strong></div>
+                        <div><span class="metric-label">Dir. Acc.</span> <strong id="m1-dir">—</strong></div>
+                    </div>
+
+                    <p id="m1-data-note" class="data-note"></p>
+                </div>
+            </div>
+
+            <!-- Model 2 column -->
+            <div class="model-column">
+                <div class="model-column-header">
+                    <h3>Model 2</h3>
+                    <span class="model-subtitle">Stock + Market Context</span>
+                </div>
+
+                <div id="m2-error" class="panel panel-error hidden"></div>
+
+                <div id="m2-results">
+                    <span id="m2-outlook" class="outlook-badge">—</span>
+                    <p id="m2-summary" class="summary"></p>
+
+                    <div class="compare-stats">
+                        <div class="compare-stat">
+                            <span class="box-label">Predicted Return</span>
+                            <strong id="m2-return">—</strong>
+                        </div>
+                        <div class="compare-stat">
+                            <span class="box-label">Est. Price (30d)</span>
+                            <strong id="m2-price">—</strong>
+                        </div>
+                    </div>
+
+                    <div class="mini-metrics">
+                        <div><span class="metric-label">MAE</span> <strong id="m2-mae">—</strong></div>
+                        <div><span class="metric-label">RMSE</span> <strong id="m2-rmse">—</strong></div>
+                        <div><span class="metric-label">R&sup2;</span> <strong id="m2-r2">—</strong></div>
+                        <div><span class="metric-label">Dir. Acc.</span> <strong id="m2-dir">—</strong></div>
+                    </div>
+
+                    <p id="m2-data-note" class="data-note"></p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Shown when predictions were auto-saved for a watchlist ticker -->
         <p id="saved-note" class="saved-note hidden">
-            &#10003; This prediction was saved to your
+            &#10003; Both predictions were saved to your
             <a href="/predictions">prediction history</a>
             because the ticker is on your watchlist.
         </p>
