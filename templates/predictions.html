@@ -27,7 +27,7 @@
         <span id="evaluate-status" class="hint"></span>
     </div>
 
-    <!-- ── Prediction table ── -->
+    <!-- ── Prediction accordion ── -->
     <section class="panel" style="margin-top:22px;">
         <h3 style="margin:0 0 14px;">All Predictions</h3>
 
@@ -55,27 +55,7 @@
             <a href="/watchlist">watchlist</a> or <a href="/">predict page</a>.
         </div>
 
-        <div class="table-wrap">
-            <table id="predictions-table" class="data-table hidden">
-                <thead>
-                    <tr>
-                        <th>Model</th>
-                        <th>Ticker</th>
-                        <th>Date</th>
-                        <th>Close</th>
-                        <th>Pred. Return</th>
-                        <th>Pred. Dir.</th>
-                        <th>Status</th>
-                        <th>Actual Return</th>
-                        <th>Actual Dir.</th>
-                        <th>Result</th>
-                        <th>Magnitude</th>
-                        <th></th>
-                    </tr>
-                </thead>
-                <tbody id="predictions-body"></tbody>
-            </table>
-        </div>
+        <div id="accordion-container" class="accordion-container hidden"></div>
     </section>
 </section>
 {% endblock %}

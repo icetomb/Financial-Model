@@ -19,6 +19,15 @@ const overlay = document.getElementById("prediction-overlay");
 const overlayBody = document.getElementById("overlay-body");
 const closeOverlayBtn = document.getElementById("close-overlay");
 
+const runAllBtn = document.getElementById("run-all-btn");
+const runAllProgress = document.getElementById("run-all-progress");
+const runAllText = document.getElementById("run-all-text");
+const runAllCounter = document.getElementById("run-all-counter");
+const runAllBar = document.getElementById("run-all-bar");
+const runAllLog = document.getElementById("run-all-log");
+
+let knownModels = [];
+
 // -------- Helpers --------
 
 function showMessage(text) {
@@ -192,7 +201,7 @@ async function removeFromWatchlist(id) {
     }
 }
 
-// -------- Run prediction (uses the selected model) --------
+// -------- Run single prediction (uses the selected model) --------
 
 async function runPrediction(ticker, btn) {
     const modelName = watchlistModel.value;
@@ -216,7 +225,6 @@ async function runPrediction(ticker, btn) {
         const result = data.result;
         const pred = data.prediction;
 
-        // Update overlay heading to reflect which model was used
         document.getElementById("overlay-model-name").textContent = modelName;
 
         overlayBody.innerHTML = `
@@ -254,6 +262,84 @@ async function runPrediction(ticker, btn) {
     }
 }
 
+// -------- Run All Models on All Stocks --------
+
+runAllBtn.addEventListener("click", async () => {
+    let tickers;
+    try {
+        const res = await fetch("/api/watchlist");
+        tickers = (await res.json()).map((item) => item.ticker);
+    } catch {
+        showError("Failed to load watchlist.");
+        return;
+    }
+
+    if (tickers.length === 0) {
+        showError("No stocks on your watchlist.");
+        return;
+    }
+
+    const totalJobs = tickers.length * knownModels.length;
+    let completed = 0;
+    let successes = 0;
+    let failures = 0;
+
+    runAllBtn.disabled = true;
+    runAllProgress.classList.remove("hidden");
+    runAllLog.innerHTML = "";
+    runAllBar.style.width = "0%";
+    runAllText.textContent = "Starting\u2026";
+    runAllCounter.textContent = `0 / ${totalJobs}`;
+
+    for (const ticker of tickers) {
+        runAllText.textContent = `Running ${ticker}\u2026`;
+
+        // Run all models for this ticker in parallel
+        const results = await Promise.allSettled(
+            knownModels.map(async (model) => {
+                const res = await fetch("/api/predictions/run", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ ticker, model_name: model }),
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.error || "Failed");
+                return { model, data };
+            })
+        );
+
+        results.forEach((r, i) => {
+            completed++;
+            const model = knownModels[i];
+            const entry = document.createElement("div");
+            entry.className = "run-all-log-entry";
+
+            if (r.status === "fulfilled") {
+                successes++;
+                const ret = r.value.data.result.predicted_return;
+                entry.innerHTML = `<span class="log-success">\u2713</span> 
+                    <strong>${ticker}</strong> \u00b7 ${model} \u2014 
+                    <span class="${toneClass(ret)}">${formatPercent(ret)}</span>`;
+            } else {
+                failures++;
+                entry.innerHTML = `<span class="log-fail">\u2717</span> 
+                    <strong>${ticker}</strong> \u00b7 ${model} \u2014 
+                    <span class="value-negative">Failed</span>`;
+            }
+
+            runAllLog.appendChild(entry);
+            runAllLog.scrollTop = runAllLog.scrollHeight;
+
+            const pct = Math.round((completed / totalJobs) * 100);
+            runAllBar.style.width = `${pct}%`;
+            runAllCounter.textContent = `${completed} / ${totalJobs}`;
+        });
+    }
+
+    runAllText.textContent = `Done \u2014 ${successes} succeeded, ${failures} failed`;
+    runAllBtn.disabled = false;
+});
+
 // -------- Close overlay --------
 
 closeOverlayBtn.addEventListener("click", () => overlay.classList.add("hidden"));
@@ -266,15 +352,16 @@ overlay.addEventListener("click", (e) => {
 async function loadModels() {
     try {
         const res = await fetch("/api/models");
-        const models = await res.json();
+        knownModels = await res.json();
         watchlistModel.innerHTML = "";
-        models.forEach((m) => {
+        knownModels.forEach((m) => {
             const opt = document.createElement("option");
             opt.value = m;
             opt.textContent = m;
             watchlistModel.appendChild(opt);
         });
     } catch {
+        knownModels = ["Model 1"];
         watchlistModel.innerHTML = '<option value="Model 1">Model 1</option>';
     }
 }

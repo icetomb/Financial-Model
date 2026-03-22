@@ -34,8 +34,25 @@
     <section id="watchlist-section" class="panel" style="margin-top:22px;">
         <div class="section-header">
             <h3 style="margin:0;">Your Watchlist</h3>
-            <!-- Options populated dynamically by JS from /api/models -->
-            <select id="watchlist-model" class="filter-select"></select>
+            <div class="section-header-controls">
+                <!-- Options populated dynamically by JS from /api/models -->
+                <select id="watchlist-model" class="filter-select"></select>
+                <button id="run-all-btn" class="btn-small btn-primary">
+                    Run All Models on All Stocks
+                </button>
+            </div>
+        </div>
+
+        <!-- Progress panel for "Run All" (hidden by default) -->
+        <div id="run-all-progress" class="run-all-panel hidden">
+            <div class="run-all-status">
+                <span id="run-all-text">Starting...</span>
+                <span id="run-all-counter" class="run-all-counter"></span>
+            </div>
+            <div class="progress-track">
+                <div id="run-all-bar" class="progress-bar"></div>
+            </div>
+            <div id="run-all-log" class="run-all-log"></div>
         </div>
 
         <div id="watchlist-empty" class="empty-state">

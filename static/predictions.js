@@ -1,11 +1,9 @@
 // ---------------------------------------------------------------------------
-// Predictions page – shows all-model performance comparison + prediction history
+// Predictions page – accordion grouped by ticker + all-model performance
 // ---------------------------------------------------------------------------
 
 const perfContainer = document.getElementById("perf-container");
-
-const predictionsTable = document.getElementById("predictions-table");
-const predictionsBody = document.getElementById("predictions-body");
+const accordionContainer = document.getElementById("accordion-container");
 const predictionsEmpty = document.getElementById("predictions-empty");
 
 const evaluateBtn = document.getElementById("evaluate-btn");
@@ -91,7 +89,6 @@ async function loadModels() {
         knownModels = ["Model 1", "Model 2"];
     }
 
-    // Populate the model filter dropdown dynamically
     filterModel.innerHTML = '<option value="">All Models</option>';
     knownModels.forEach((m) => {
         const opt = document.createElement("option");
@@ -104,7 +101,6 @@ async function loadModels() {
 // -------- Performance comparison (one card per model) --------
 
 async function loadAllPerformance() {
-    // Fetch performance for every model in parallel
     const results = await Promise.all(
         knownModels.map(async (model) => {
             try {
@@ -120,7 +116,6 @@ async function loadAllPerformance() {
 
     perfContainer.innerHTML = "";
 
-    // Check if any model has data
     const anyData = results.some((p) => p.total_predictions > 0);
     if (!anyData) {
         perfContainer.innerHTML =
@@ -128,7 +123,6 @@ async function loadAllPerformance() {
         return;
     }
 
-    // Build a card for each model
     results.forEach((perf) => {
         const card = document.createElement("div");
         card.className = "perf-card";
@@ -182,23 +176,24 @@ async function loadAllPerformance() {
     });
 }
 
-// -------- Predictions table --------
+// -------- Predictions (load + accordion render) --------
 
 async function loadPredictions() {
     try {
         const res = await fetch("/api/predictions");
         allPredictions = await res.json();
-        renderPredictions();
+        renderAccordion();
     } catch (err) {
         console.error("Failed to load predictions:", err);
     }
 }
 
-function renderPredictions() {
+function renderAccordion() {
     const modelVal = filterModel.value;
     const statusVal = filterStatus.value;
     const tickerVal = filterTicker.value.trim().toUpperCase();
 
+    // Apply filters at the prediction level
     let filtered = allPredictions;
     if (modelVal) {
         filtered = filtered.filter((p) => p.model_name === modelVal);
@@ -210,44 +205,124 @@ function renderPredictions() {
         filtered = filtered.filter((p) => p.ticker.includes(tickerVal));
     }
 
-    predictionsBody.innerHTML = "";
+    accordionContainer.innerHTML = "";
 
     if (filtered.length === 0) {
         predictionsEmpty.classList.remove("hidden");
-        predictionsTable.classList.add("hidden");
+        accordionContainer.classList.add("hidden");
         return;
     }
 
     predictionsEmpty.classList.add("hidden");
-    predictionsTable.classList.remove("hidden");
+    accordionContainer.classList.remove("hidden");
 
+    // Group by ticker
+    const groups = {};
     filtered.forEach((p) => {
-        const tr = document.createElement("tr");
-        tr.innerHTML = `
-            <td>${modelBadge(p.model_name)}</td>
-            <td><strong>${p.ticker}</strong></td>
-            <td>${p.prediction_date}</td>
-            <td>${formatCurrency(p.latest_close)}</td>
-            <td class="${toneClass(p.predicted_return)}">${formatPercent(p.predicted_return)}</td>
-            <td>${directionBadge(p.predicted_direction)}</td>
-            <td>${statusBadge(p.status)}</td>
-            <td class="${toneClass(p.actual_return)}">${formatPercent(p.actual_return)}</td>
-            <td>${directionBadge(p.actual_direction)}</td>
-            <td>${resultBadge(p)}</td>
-            <td>${magnitudeText(p)}</td>
-            <td>
-                <button class="btn-small btn-danger"
-                        data-action="delete"
-                        data-id="${p.id}">Delete</button>
-            </td>
+        if (!groups[p.ticker]) groups[p.ticker] = [];
+        groups[p.ticker].push(p);
+    });
+
+    // Sort each group's predictions newest first
+    Object.values(groups).forEach((preds) => {
+        preds.sort((a, b) => b.prediction_date.localeCompare(a.prediction_date));
+    });
+
+    // Sort tickers by the most recent prediction date (newest first)
+    const sortedTickers = Object.keys(groups).sort((a, b) => {
+        return groups[b][0].prediction_date.localeCompare(
+            groups[a][0].prediction_date
+        );
+    });
+
+    sortedTickers.forEach((ticker) => {
+        const preds = groups[ticker];
+        const uniqueModels = [...new Set(preds.map((p) => p.model_name))];
+        const latestDate = preds[0].prediction_date;
+
+        // Accordion item wrapper
+        const item = document.createElement("div");
+        item.className = "accordion-item";
+
+        // Collapsed header row
+        const header = document.createElement("button");
+        header.className = "accordion-header";
+        header.innerHTML = `
+            <span class="accordion-chevron">\u25B6</span>
+            <strong class="accordion-ticker">${ticker}</strong>
+            <span class="accordion-badges">${uniqueModels.map((m) => modelBadge(m)).join(" ")}</span>
+            <span class="accordion-meta">
+                ${preds.length} prediction${preds.length !== 1 ? "s" : ""} 
+                &middot; latest ${latestDate}
+            </span>
         `;
-        predictionsBody.appendChild(tr);
+
+        header.addEventListener("click", () => {
+            const isOpen = item.classList.toggle("open");
+            header.querySelector(".accordion-chevron").textContent = isOpen
+                ? "\u25BC"
+                : "\u25B6";
+        });
+
+        // Expanded body with sub-table
+        const body = document.createElement("div");
+        body.className = "accordion-body";
+
+        let rows = "";
+        preds.forEach((p) => {
+            rows += `
+                <tr>
+                    <td>${modelBadge(p.model_name)}</td>
+                    <td>${p.prediction_date}</td>
+                    <td>${formatCurrency(p.latest_close)}</td>
+                    <td class="${toneClass(p.predicted_return)}">${formatPercent(p.predicted_return)}</td>
+                    <td>${directionBadge(p.predicted_direction)}</td>
+                    <td>${statusBadge(p.status)}</td>
+                    <td class="${toneClass(p.actual_return)}">${formatPercent(p.actual_return)}</td>
+                    <td>${directionBadge(p.actual_direction)}</td>
+                    <td>${resultBadge(p)}</td>
+                    <td>${magnitudeText(p)}</td>
+                    <td>
+                        <button class="btn-small btn-danger"
+                                data-action="delete"
+                                data-id="${p.id}">Delete</button>
+                    </td>
+                </tr>
+            `;
+        });
+
+        body.innerHTML = `
+            <div class="table-wrap">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Model</th>
+                            <th>Date</th>
+                            <th>Close</th>
+                            <th>Pred. Return</th>
+                            <th>Pred. Dir.</th>
+                            <th>Status</th>
+                            <th>Actual Return</th>
+                            <th>Actual Dir.</th>
+                            <th>Result</th>
+                            <th>Magnitude</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody>${rows}</tbody>
+                </table>
+            </div>
+        `;
+
+        item.appendChild(header);
+        item.appendChild(body);
+        accordionContainer.appendChild(item);
     });
 }
 
-// -------- Delete a prediction (event delegation on table body) --------
+// -------- Delete a prediction (event delegation on accordion container) --------
 
-predictionsBody.addEventListener("click", async (e) => {
+accordionContainer.addEventListener("click", async (e) => {
     const btn = e.target.closest('button[data-action="delete"]');
     if (!btn) return;
 
@@ -290,16 +365,15 @@ evaluateBtn.addEventListener("click", async () => {
     }
 });
 
-// -------- Filters (table only — performance always shows all) --------
+// -------- Filters --------
 
-filterModel.addEventListener("change", renderPredictions);
-filterStatus.addEventListener("change", renderPredictions);
-filterTicker.addEventListener("input", renderPredictions);
+filterModel.addEventListener("change", renderAccordion);
+filterStatus.addEventListener("change", renderAccordion);
+filterTicker.addEventListener("input", renderAccordion);
 
 // -------- Init --------
 
 async function init() {
-    // Discover models, auto-evaluate, then load everything
     await loadModels();
 
     try {

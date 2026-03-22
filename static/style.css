@@ -990,3 +990,158 @@ button:disabled {
         text-align: left;
     }
 }
+
+/* ==========================================================================
+   Accordion (predictions page – grouped by ticker)
+   ========================================================================== */
+
+.accordion-container {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.accordion-item {
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    overflow: hidden;
+    background: #ffffff;
+}
+
+.accordion-header {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 14px 16px;
+    border: none;
+    border-radius: 0;
+    background: #ffffff;
+    color: var(--text);
+    font-size: 0.94rem;
+    font-weight: 400;
+    cursor: pointer;
+    text-align: left;
+    transition: background 0.15s ease;
+}
+
+.accordion-header:hover {
+    background: rgba(35, 104, 196, 0.04);
+}
+
+.accordion-chevron {
+    font-size: 0.7rem;
+    color: var(--muted);
+    flex-shrink: 0;
+    width: 14px;
+    text-align: center;
+}
+
+.accordion-ticker {
+    font-size: 1.02rem;
+}
+
+.accordion-badges {
+    display: flex;
+    gap: 4px;
+    flex-shrink: 0;
+}
+
+.accordion-meta {
+    margin-left: auto;
+    font-size: 0.82rem;
+    color: var(--muted);
+    white-space: nowrap;
+}
+
+.accordion-body {
+    display: none;
+    border-top: 1px solid var(--border);
+    padding: 4px 0;
+}
+
+.accordion-item.open .accordion-body {
+    display: block;
+}
+
+.accordion-body .data-table {
+    font-size: 0.86rem;
+}
+
+.accordion-body .data-table th {
+    font-size: 0.76rem;
+}
+
+@media (max-width: 640px) {
+    .accordion-header {
+        flex-wrap: wrap;
+    }
+
+    .accordion-meta {
+        width: 100%;
+        margin-left: 24px;
+        margin-top: 2px;
+    }
+}
+
+/* ==========================================================================
+   Run-All progress panel (watchlist page)
+   ========================================================================== */
+
+.section-header-controls {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.run-all-panel {
+    margin-bottom: 16px;
+    padding: 16px;
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    background: var(--panel-bg);
+}
+
+.run-all-status {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 8px;
+    font-weight: 600;
+    font-size: 0.94rem;
+}
+
+.run-all-counter {
+    color: var(--muted);
+    font-size: 0.88rem;
+    font-weight: 400;
+}
+
+.run-all-log {
+    margin-top: 12px;
+    max-height: 220px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.run-all-log-entry {
+    font-size: 0.88rem;
+    padding: 4px 0;
+    border-bottom: 1px solid rgba(215, 225, 238, 0.4);
+}
+
+.run-all-log-entry:last-child {
+    border-bottom: none;
+}
+
+.log-success {
+    color: var(--positive);
+    font-weight: 700;
+}
+
+.log-fail {
+    color: var(--negative);
+    font-weight: 700;
+}
