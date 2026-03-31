@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Stock Prediction Tracker{% endblock %}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <!-- Shared navigation bar across all pages -->
+    <nav class="main-nav">
+        <div class="nav-inner">
+            <a href="/" class="nav-brand">Stock Prediction Tracker</a>
+            <div class="nav-links">
+                <a href="/"
+                   class="nav-link {{ 'active' if active_page == 'predict' }}">
+                    Predict
+                </a>
+                <a href="/watchlist"
+                   class="nav-link {{ 'active' if active_page == 'watchlist' }}">
+                    Watchlist
+                </a>
+                <a href="/predictions"
+                   class="nav-link {{ 'active' if active_page == 'predictions' }}">
+                    Predictions
+                </a>
+            </div>
+        </div>
+    </nav>
+
+    <main class="page">
+        {% block content %}{% endblock %}
+    </main>
+
+    {% block scripts %}{% endblock %}
+</body>
+</html>

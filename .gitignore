@@ -25,6 +25,9 @@ Thumbs.db
 data/
 *.csv
 
+# SQLite database (created at runtime)
+*.db
+
 # Model files (optional)
 *.pkl
 *.joblib
