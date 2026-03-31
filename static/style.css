@@ -1234,7 +1234,7 @@ button:disabled {
 
 .rec-reasons-cell {
     white-space: normal;
-    max-width: 280px;
+    max-width: 240px;
     display: flex;
     flex-direction: column;
     gap: 3px;

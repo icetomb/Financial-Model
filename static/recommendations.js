@@ -180,18 +180,20 @@ function renderResults(results) {
             <td>${formatCurrency(stock.week52_high)}</td>
             <td><span class="${toneClass(-stock.pct_below_high)}">${formatPercent(-stock.pct_below_high)}</span></td>
             <td><span class="rec-score-badge ${scoreColorClass(stock.recommendation_score)}">${stock.recommendation_score}</span></td>
-            <td class="rec-reasons-cell">${reasonsHtml}${moreTag}</td>
-            <td class="action-cell">
-                <button class="btn-small btn-primary"
-                        data-action="details"
-                        data-idx="${idx}">
-                    Details
-                </button>
-                <button class="btn-small btn-primary"
-                        data-action="add-watchlist"
-                        data-ticker="${stock.ticker}">
-                    + Watchlist
-                </button>
+            <td><div class="rec-reasons-cell">${reasonsHtml}${moreTag}</div></td>
+            <td>
+                <div class="action-cell">
+                    <button class="btn-small btn-primary"
+                            data-action="details"
+                            data-idx="${idx}">
+                        Details
+                    </button>
+                    <button class="btn-small btn-primary"
+                            data-action="add-watchlist"
+                            data-ticker="${stock.ticker}">
+                        + Watchlist
+                    </button>
+                </div>
             </td>
         `;
         tr.dataset.stock = JSON.stringify(stock);
