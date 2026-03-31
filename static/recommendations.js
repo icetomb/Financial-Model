@@ -336,6 +336,11 @@ function showDetails(stock) {
         <h4 style="margin: 20px 0 8px;">Why Recommended</h4>
         <ul class="rec-reasons-list">${reasonsList}</ul>
 
+        <h4 style="margin: 20px 0 8px;">Recent News</h4>
+        <div id="detail-news" class="rec-news-section">
+            <p class="hint">Loading news\u2026</p>
+        </div>
+
         <div style="display:flex; align-items:center; gap:8px; margin-top:20px; flex-wrap:wrap;">
             ${modelSelect}
             <button id="detail-run-prediction" class="btn-small btn-primary" data-ticker="${stock.ticker}">
@@ -356,6 +361,55 @@ function showDetails(stock) {
     document.getElementById("detail-add-watchlist").addEventListener("click", (e) => {
         addToWatchlist(e.target.dataset.ticker, e.target);
     });
+
+    loadNews(stock.ticker);
+}
+
+// -------- Fetch and render news --------
+
+async function loadNews(ticker) {
+    const container = document.getElementById("detail-news");
+    try {
+        const res = await fetch(`/api/news/${encodeURIComponent(ticker)}`);
+        const articles = await res.json();
+
+        if (!articles || articles.length === 0) {
+            container.innerHTML = '<p class="hint">No recent news found for this ticker.</p>';
+            return;
+        }
+
+        container.innerHTML = articles.map((a) => {
+            const date = a.published ? formatNewsDate(a.published) : "";
+            const publisher = a.publisher ? `<span class="rec-news-source">${a.publisher}</span>` : "";
+            const link = a.link
+                ? `<a href="${a.link}" target="_blank" rel="noopener">${a.title || "Untitled"}</a>`
+                : (a.title || "Untitled");
+            return `<div class="rec-news-item">
+                <div class="rec-news-title">${link}</div>
+                <div class="rec-news-meta">${publisher}${date ? ` · ${date}` : ""}</div>
+            </div>`;
+        }).join("");
+    } catch {
+        container.innerHTML = '<p class="hint">Failed to load news.</p>';
+    }
+}
+
+function formatNewsDate(isoString) {
+    try {
+        const d = new Date(isoString);
+        if (isNaN(d)) return "";
+        const now = new Date();
+        const diffMs = now - d;
+        const diffHrs = Math.floor(diffMs / 3600000);
+        if (diffHrs < 1) return "just now";
+        if (diffHrs < 24) return `${diffHrs}h ago`;
+        const diffDays = Math.floor(diffHrs / 24);
+        if (diffDays === 1) return "1 day ago";
+        if (diffDays < 30) return `${diffDays} days ago`;
+        return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+    } catch {
+        return "";
+    }
 }
 
 // -------- Run prediction from details overlay --------

@@ -410,6 +410,51 @@ class TestRoutes:
         data = json.loads(resp.data)
         assert data == []
 
+    @patch("app.get_ticker_news")
+    def test_news_api_returns_200(self, mock_news, client):
+        mock_news.return_value = [
+            {"title": "Test headline", "publisher": "Reuters", "link": "https://example.com", "published": "2026-03-30T10:00:00Z"},
+        ]
+        resp = client.get("/api/news/AAPL")
+        assert resp.status_code == 200
+        data = json.loads(resp.data)
+        assert isinstance(data, list)
+        assert data[0]["title"] == "Test headline"
+
+    @patch("app.get_ticker_news")
+    def test_news_api_empty(self, mock_news, client):
+        mock_news.return_value = []
+        resp = client.get("/api/news/AAPL")
+        assert resp.status_code == 200
+        data = json.loads(resp.data)
+        assert data == []
+
+
+# ---------------------------------------------------------------------------
+# News function tests
+# ---------------------------------------------------------------------------
+
+class TestNews:
+    @patch("services.recommendations.yf.Ticker")
+    def test_get_ticker_news_returns_list(self, mock_ticker_cls):
+        from services.recommendations import get_ticker_news
+        mock_tk = mock_ticker_cls.return_value
+        mock_tk.news = [
+            {"content": {"title": "Big Deal", "provider": {"displayName": "CNBC"}, "canonicalUrl": {"url": "https://cnbc.com/1"}, "pubDate": "2026-03-30T08:00:00Z"}},
+            {"content": {"title": "Earnings", "provider": {"displayName": "Reuters"}, "canonicalUrl": {"url": "https://reuters.com/2"}, "pubDate": "2026-03-29T12:00:00Z"}},
+        ]
+        result = get_ticker_news("AAPL")
+        assert len(result) == 2
+        assert result[0]["title"] == "Big Deal"
+        assert result[0]["publisher"] == "CNBC"
+
+    @patch("services.recommendations.yf.Ticker")
+    def test_get_ticker_news_empty_on_failure(self, mock_ticker_cls):
+        from services.recommendations import get_ticker_news
+        mock_ticker_cls.side_effect = Exception("API down")
+        result = get_ticker_news("AAPL")
+        assert result == []
+
 
 # ---------------------------------------------------------------------------
 # Database cache tests

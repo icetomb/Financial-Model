@@ -10,7 +10,7 @@ import database as db
 from models.model_1 import PredictionError
 from models.model_1 import build_prediction as build_prediction_m1
 from models.model_2 import build_prediction as build_prediction_m2
-from services.recommendations import get_recommendations
+from services.recommendations import get_recommendations, get_ticker_news
 from services.stock_universe import get_industries, get_sectors
 
 # Maps model names to their build_prediction functions.
@@ -109,6 +109,16 @@ def create_app() -> Flask:
         """Return industries for a given sector (or all if none specified)."""
         sector = request.args.get("sector") or None
         return jsonify(get_industries(sector))
+
+    @app.get("/api/news/<ticker>")
+    def api_get_news(ticker: str):
+        """Return recent news headlines for a ticker."""
+        try:
+            news = get_ticker_news(ticker.upper())
+        except Exception:
+            app.logger.exception("News fetch error for %s", ticker)
+            return jsonify([])
+        return jsonify(news)
 
     # ------------------------------------------------------------------
     # Predict API  (supports model selection via model_name in payload)

@@ -25,6 +25,7 @@ All thresholds live in ``WEIGHT_CONFIG`` so they can be tuned in one place.
 from __future__ import annotations
 
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timedelta
 from typing import Any, Optional
 
@@ -34,6 +35,8 @@ import database as db
 from services.stock_universe import get_candidates
 
 logger = logging.getLogger(__name__)
+
+MAX_WORKERS = 8
 
 # ---------------------------------------------------------------------------
 # Weight / threshold configuration  (single place to tune)
@@ -65,7 +68,7 @@ WEIGHT_CONFIG = {
     "roe_full":                   0.20,  # 20 % ROE → full points
 }
 
-CACHE_TTL_HOURS = 12
+CACHE_TTL_HOURS = 24
 
 
 # ---------------------------------------------------------------------------
@@ -295,6 +298,41 @@ def apply_filters(
 # Orchestration  (main entry point for the route)
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# News  (on-demand, not part of the scoring pipeline)
+# ---------------------------------------------------------------------------
+
+def get_ticker_news(ticker: str, max_items: int = 8) -> list[dict[str, Any]]:
+    """Fetch recent news headlines for *ticker* via yfinance.
+
+    Returns a list of dicts with ``title``, ``publisher``, ``link``, and
+    ``published`` (ISO timestamp string).  Returns an empty list on failure.
+    """
+    try:
+        tk = yf.Ticker(ticker)
+        raw = tk.news or []
+    except Exception:
+        logger.warning("News fetch failed for %s", ticker)
+        return []
+
+    items: list[dict[str, Any]] = []
+    for article in raw[:max_items]:
+        content = article.get("content", {})
+        pub_date = content.get("pubDate", "")
+        provider = content.get("provider", {})
+        items.append({
+            "title": content.get("title", article.get("title", "")),
+            "publisher": provider.get("displayName", ""),
+            "link": content.get("canonicalUrl", {}).get("url", article.get("link", "")),
+            "published": pub_date,
+        })
+    return items
+
+
+# ---------------------------------------------------------------------------
+# Orchestration  (main entry point for the route)
+# ---------------------------------------------------------------------------
+
 SORT_OPTIONS = {
     "score":             lambda r: r["recommendation_score"],
     "price":             lambda r: r["current_price"],
@@ -326,13 +364,24 @@ def get_recommendations(
     candidates = get_candidates(sector=sector, industry=industry)
     results: list[dict[str, Any]] = []
 
+    # Fetch all tickers concurrently to avoid sequential API latency
+    fetched: dict[str, dict[str, Any] | None] = {}
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
+        futures = {
+            pool.submit(_fetch_stock_data, entry["ticker"]): entry
+            for entry in candidates
+        }
+        for future in as_completed(futures):
+            entry = futures[future]
+            try:
+                fetched[entry["ticker"]] = future.result()
+            except Exception:
+                logger.warning("Fetch failed for %s – skipping", entry["ticker"])
+                fetched[entry["ticker"]] = None
+
     for entry in candidates:
         ticker = entry["ticker"]
-        try:
-            data = _fetch_stock_data(ticker)
-        except Exception:
-            logger.warning("Fetch failed for %s – skipping", ticker)
-            continue
+        data = fetched.get(ticker)
 
         if data is None:
             logger.info("Incomplete data for %s – skipping", ticker)
