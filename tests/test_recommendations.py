@@ -24,6 +24,14 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import database as db
+from services.news_analysis import (
+    NEWS_ADJUSTMENT_BOUNDS,
+    analyze_headlines,
+    compute_final_score,
+    compute_news_adjustment,
+    get_final_stance,
+    score_headline,
+)
 from services.recommendations import (
     WEIGHT_CONFIG,
     apply_filters,
@@ -43,6 +51,27 @@ def _use_temp_db(tmp_path, monkeypatch):
     db_path = str(tmp_path / "test.db")
     monkeypatch.setattr(db, "DB_PATH", db_path)
     db.init_db()
+
+
+@pytest.fixture(autouse=True)
+def _skip_news_enrichment(monkeypatch):
+    """Prevent real news API calls in tests by replacing enrichment with
+    a no-op that applies neutral defaults.  Tests that need real enrichment
+    behaviour can override ``_enrich_with_news`` explicitly."""
+
+    def _noop(results):
+        for r in results:
+            r.setdefault("base_score", r.get("recommendation_score", 0))
+            r.setdefault("sentiment_label", "neutral")
+            r.setdefault("sentiment_icon_color", "yellow")
+            r.setdefault("news_adjustment", 0.0)
+            r.setdefault("news_summary", "")
+            r.setdefault("news_headline_count", 0)
+            r.setdefault("risk_flags", [])
+            r.setdefault("positive_catalysts", [])
+            r.setdefault("final_stance", "")
+
+    monkeypatch.setattr("services.recommendations._enrich_with_news", _noop)
 
 
 @pytest.fixture()
@@ -479,3 +508,365 @@ class TestFundamentalsCache:
         db.upsert_fundamentals_cache(data)
         cached = db.get_fundamentals_cache("UPD")
         assert cached["current_price"] == 55.0
+
+
+# ---------------------------------------------------------------------------
+# Sentiment classification tests
+# ---------------------------------------------------------------------------
+
+class TestSentimentClassification:
+    def test_positive_headlines(self):
+        headlines = [
+            {"title": "Company beats expectations with record earnings"},
+            {"title": "Analyst upgraded stock to buy rating"},
+        ]
+        result = analyze_headlines(headlines)
+        assert result["sentiment_label"] == "positive"
+        assert result["sentiment_icon_color"] == "green"
+
+    def test_negative_headlines(self):
+        headlines = [
+            {"title": "Company missed expectations, profit warning issued"},
+            {"title": "Stock downgraded after earnings miss"},
+        ]
+        result = analyze_headlines(headlines)
+        assert result["sentiment_label"] == "negative"
+        assert result["sentiment_icon_color"] == "red"
+
+    def test_neutral_headlines(self):
+        headlines = [
+            {"title": "Company plans to host investor day next quarter"},
+            {"title": "Annual meeting scheduled for next month"},
+        ]
+        result = analyze_headlines(headlines)
+        assert result["sentiment_label"] == "neutral"
+        assert result["sentiment_icon_color"] == "yellow"
+
+    def test_empty_headlines_returns_neutral(self):
+        result = analyze_headlines([])
+        assert result["sentiment_label"] == "neutral"
+        assert result["sentiment_icon_color"] == "yellow"
+        assert result["news_adjustment"] == 0.0
+        assert result["headline_count"] == 0
+
+    def test_mixed_headlines_classified(self):
+        headlines = [
+            {"title": "Strong earnings beat expectations"},
+            {"title": "Lawsuit filed against company"},
+        ]
+        result = analyze_headlines(headlines)
+        assert result["sentiment_label"] in ("positive", "neutral", "negative")
+        assert result["positive_count"] >= 1
+        assert result["negative_count"] >= 1
+
+    def test_near_duplicate_headlines_deduplicated(self):
+        headlines = [
+            {"title": "Company beats Q4 earnings expectations"},
+            {"title": "Company beats Q4 earnings expectations today"},
+        ]
+        result = analyze_headlines(headlines)
+        assert result["headline_count"] <= 2
+
+    def test_headline_counts_correct(self):
+        headlines = [
+            {"title": "Earnings beat expectations"},
+            {"title": "Annual shareholder meeting held"},
+            {"title": "Stock downgraded by analyst"},
+        ]
+        result = analyze_headlines(headlines)
+        total = result["positive_count"] + result["negative_count"] + result["neutral_count"]
+        assert total == result["headline_count"]
+
+
+# ---------------------------------------------------------------------------
+# Headline scoring tests
+# ---------------------------------------------------------------------------
+
+class TestHeadlineScoring:
+    def test_positive_keyword_scores_positive(self):
+        assert score_headline("Company beats expectations") > 0
+
+    def test_negative_keyword_scores_negative(self):
+        assert score_headline("Stock downgraded by analysts") < 0
+
+    def test_neutral_headline_scores_zero(self):
+        assert score_headline("Company announces board meeting") == 0.0
+
+    def test_empty_string_scores_zero(self):
+        assert score_headline("") == 0.0
+
+    def test_case_insensitive(self):
+        assert score_headline("EARNINGS BEAT EXPECTATIONS") > 0
+
+
+# ---------------------------------------------------------------------------
+# News adjustment tests
+# ---------------------------------------------------------------------------
+
+class TestNewsAdjustment:
+    def test_max_positive_bounded(self):
+        adj = compute_news_adjustment(1.0)
+        assert adj == NEWS_ADJUSTMENT_BOUNDS["max_positive"]
+
+    def test_max_negative_bounded(self):
+        adj = compute_news_adjustment(-1.0)
+        assert adj == NEWS_ADJUSTMENT_BOUNDS["max_negative"]
+
+    def test_zero_sentiment_zero_adjustment(self):
+        assert compute_news_adjustment(0.0) == 0.0
+
+    def test_moderate_positive(self):
+        adj = compute_news_adjustment(0.5)
+        assert 0 < adj < NEWS_ADJUSTMENT_BOUNDS["max_positive"]
+
+    def test_moderate_negative(self):
+        adj = compute_news_adjustment(-0.5)
+        assert NEWS_ADJUSTMENT_BOUNDS["max_negative"] < adj < 0
+
+
+# ---------------------------------------------------------------------------
+# Final score composition tests
+# ---------------------------------------------------------------------------
+
+class TestFinalScore:
+    def test_additive_composition(self):
+        assert compute_final_score(60.0, 5.0) == 65.0
+        assert compute_final_score(60.0, -10.0) == 50.0
+
+    def test_clamped_at_100(self):
+        assert compute_final_score(95.0, 10.0) == 100.0
+
+    def test_clamped_at_0(self):
+        assert compute_final_score(5.0, -10.0) == 0.0
+
+    def test_zero_adjustment_preserves_base(self):
+        assert compute_final_score(42.5, 0.0) == 42.5
+
+    def test_base_plus_adjustment_equals_final(self):
+        base, adj = 55.0, 7.5
+        assert compute_final_score(base, adj) == base + adj
+
+
+# ---------------------------------------------------------------------------
+# Final stance tests
+# ---------------------------------------------------------------------------
+
+class TestFinalStance:
+    def test_strong_candidate(self):
+        assert get_final_stance(60.0, "positive") == "Strong candidate"
+        assert get_final_stance(70.0, "neutral") == "Strong candidate"
+
+    def test_candidate_with_caution(self):
+        assert get_final_stance(60.0, "negative") == "Candidate with caution"
+
+    def test_candidate_positive_mid_score(self):
+        assert get_final_stance(40.0, "positive") == "Candidate"
+
+    def test_hold_off_low_score(self):
+        assert get_final_stance(20.0, "neutral") == "Hold off"
+
+    def test_hold_off_negative_mid_score(self):
+        assert get_final_stance(40.0, "negative") == "Hold off"
+
+    def test_mixed_insufficient(self):
+        assert get_final_stance(40.0, "neutral") == "Mixed / insufficient news confidence"
+
+
+# ---------------------------------------------------------------------------
+# News analysis cache tests
+# ---------------------------------------------------------------------------
+
+class TestNewsAnalysisCache:
+    def test_upsert_and_retrieve(self):
+        analysis = {
+            "sentiment_label": "positive",
+            "sentiment_icon_color": "green",
+            "news_adjustment": 5.0,
+            "summary": "Positive coverage.",
+            "headline_count": 3,
+            "positive_count": 2,
+            "negative_count": 0,
+            "neutral_count": 1,
+            "sentiment_score": 0.6,
+            "risk_flags": [],
+            "positive_catalysts": ["Earnings beat"],
+            "analyzed_at": "2026-03-31T00:00:00",
+            "expires_at": "2026-03-31T12:00:00",
+        }
+        db.upsert_news_analysis_cache("TESTCACHE", analysis)
+        cached = db.get_news_analysis_cache("TESTCACHE")
+        assert cached is not None
+        assert cached["sentiment_label"] == "positive"
+        assert cached["news_adjustment"] == 5.0
+        assert cached["positive_catalysts"] == ["Earnings beat"]
+
+    def test_cache_returns_none_for_unknown(self):
+        assert db.get_news_analysis_cache("UNKNOWN") is None
+
+    def test_upsert_overwrites(self):
+        a1 = {
+            "sentiment_label": "positive",
+            "sentiment_icon_color": "green",
+            "news_adjustment": 5.0,
+            "summary": "Good.",
+            "headline_count": 2,
+            "positive_count": 2,
+            "negative_count": 0,
+            "neutral_count": 0,
+            "sentiment_score": 0.5,
+            "risk_flags": [],
+            "positive_catalysts": [],
+            "analyzed_at": "2026-03-31T00:00:00",
+            "expires_at": "2026-03-31T12:00:00",
+        }
+        db.upsert_news_analysis_cache("UPD2", a1)
+        a1["sentiment_label"] = "negative"
+        a1["sentiment_icon_color"] = "red"
+        a1["news_adjustment"] = -5.0
+        db.upsert_news_analysis_cache("UPD2", a1)
+        cached = db.get_news_analysis_cache("UPD2")
+        assert cached["sentiment_label"] == "negative"
+        assert cached["news_adjustment"] == -5.0
+
+
+# ---------------------------------------------------------------------------
+# News-aware orchestration tests
+# ---------------------------------------------------------------------------
+
+class TestNewsAwareOrchestration:
+    @patch("services.recommendations._fetch_stock_data")
+    def test_results_include_news_fields(self, mock_fetch):
+        mock_fetch.return_value = _make_stock()
+        with patch("services.recommendations.get_candidates") as mock_cands:
+            mock_cands.return_value = [
+                {"ticker": "TEST", "sector": "Technology", "industry": "Semiconductors"},
+            ]
+            results = get_recommendations()
+
+        assert len(results) == 1
+        r = results[0]
+        assert "base_score" in r
+        assert "sentiment_label" in r
+        assert "sentiment_icon_color" in r
+        assert "news_adjustment" in r
+        assert "news_summary" in r or "news_headline_count" in r
+        assert "risk_flags" in r
+        assert "positive_catalysts" in r
+
+    @patch("services.recommendations._fetch_stock_data")
+    def test_neutral_fallback_preserves_base_score(self, mock_fetch):
+        """With mocked enrichment (neutral), recommendation_score == base_score."""
+        mock_fetch.return_value = _make_stock()
+        with patch("services.recommendations.get_candidates") as mock_cands:
+            mock_cands.return_value = [
+                {"ticker": "TEST", "sector": "Technology", "industry": "Semiconductors"},
+            ]
+            results = get_recommendations()
+
+        r = results[0]
+        assert r["recommendation_score"] == r["base_score"]
+        assert r["news_adjustment"] == 0.0
+        assert r["sentiment_label"] == "neutral"
+
+    @patch("services.recommendations._fetch_stock_data")
+    def test_sort_uses_recommendation_score(self, mock_fetch):
+        stocks = [
+            _make_stock(ticker="A", current_price=65),
+            _make_stock(ticker="B", current_price=115),
+        ]
+        mock_fetch.side_effect = lambda t: next(
+            (s for s in stocks if s["ticker"] == t), None
+        )
+        with patch("services.recommendations.get_candidates") as mock_cands:
+            mock_cands.return_value = [
+                {"ticker": "A", "sector": "Technology", "industry": "Semiconductors"},
+                {"ticker": "B", "sector": "Technology", "industry": "Semiconductors"},
+            ]
+            results = get_recommendations(sort_by="score")
+
+        scores = [r["recommendation_score"] for r in results]
+        assert scores == sorted(scores, reverse=True)
+
+    @patch("services.recommendations._fetch_stock_data")
+    def test_one_bad_ticker_does_not_break_others(self, mock_fetch):
+        def side(ticker):
+            if ticker == "BAD":
+                return None
+            return _make_stock(ticker=ticker)
+
+        mock_fetch.side_effect = side
+        with patch("services.recommendations.get_candidates") as mock_cands:
+            mock_cands.return_value = [
+                {"ticker": "BAD", "sector": "Technology", "industry": "Semiconductors"},
+                {"ticker": "GOOD", "sector": "Technology", "industry": "Semiconductors"},
+            ]
+            results = get_recommendations()
+
+        assert len(results) == 1
+        assert results[0]["ticker"] == "GOOD"
+
+
+# ---------------------------------------------------------------------------
+# News-aware route tests
+# ---------------------------------------------------------------------------
+
+class TestNewsAwareRoutes:
+    @patch("services.recommendations._fetch_stock_data")
+    def test_recommendations_api_includes_sentiment_fields(self, mock_fetch, client):
+        mock_fetch.return_value = _make_stock()
+        with patch("services.recommendations.get_candidates") as mock_cands:
+            mock_cands.return_value = [
+                {"ticker": "TEST", "sector": "Technology", "industry": "Semiconductors"},
+            ]
+            resp = client.get("/api/recommendations?limit=5")
+
+        assert resp.status_code == 200
+        data = json.loads(resp.data)
+        assert len(data) >= 1
+        r = data[0]
+        assert "sentiment_label" in r
+        assert "base_score" in r
+        assert "news_adjustment" in r
+
+    def test_recommendations_page_still_returns_200(self, client):
+        resp = client.get("/recommendations")
+        assert resp.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# Summary and flags tests
+# ---------------------------------------------------------------------------
+
+class TestSummaryAndFlags:
+    def test_summary_non_empty_for_positive(self):
+        headlines = [
+            {"title": "Earnings beat expectations with record revenue growth"},
+        ]
+        result = analyze_headlines(headlines)
+        assert len(result["summary"]) > 0
+
+    def test_summary_for_no_news(self):
+        result = analyze_headlines([])
+        assert "unavailable" in result["summary"].lower() or "no recent" in result["summary"].lower()
+
+    def test_risk_flags_detected(self):
+        headlines = [
+            {"title": "Lawsuit filed against company over fraud allegations"},
+        ]
+        result = analyze_headlines(headlines)
+        assert len(result["risk_flags"]) > 0
+
+    def test_positive_catalysts_detected(self):
+        headlines = [
+            {"title": "Earnings beat expectations, analyst upgraded to buy"},
+        ]
+        result = analyze_headlines(headlines)
+        assert len(result["positive_catalysts"]) > 0
+
+    def test_flags_empty_for_neutral_headlines(self):
+        headlines = [
+            {"title": "Company schedules next board meeting"},
+        ]
+        result = analyze_headlines(headlines)
+        assert result["risk_flags"] == []
+        assert result["positive_catalysts"] == []

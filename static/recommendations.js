@@ -77,6 +77,11 @@ function scoreColorClass(score) {
     return "rec-score-low";
 }
 
+function sentimentTitle(label) {
+    if (!label) return "";
+    return label.charAt(0).toUpperCase() + label.slice(1) + " news sentiment";
+}
+
 // -------- Industry dropdown (depends on sector) --------
 
 sectorSelect.addEventListener("change", async () => {
@@ -179,7 +184,7 @@ function renderResults(results) {
             <td>${formatCurrency(stock.current_price)}</td>
             <td>${formatCurrency(stock.week52_high)}</td>
             <td><span class="${toneClass(-stock.pct_below_high)}">${formatPercent(-stock.pct_below_high)}</span></td>
-            <td><span class="rec-score-badge ${scoreColorClass(stock.recommendation_score)}">${stock.recommendation_score}</span></td>
+            <td><span class="rec-score-badge ${scoreColorClass(stock.recommendation_score)}">${stock.recommendation_score}</span>${stock.sentiment_label ? `<span class="sentiment-word sentiment-${stock.sentiment_label}" title="${sentimentTitle(stock.sentiment_label)}">${stock.sentiment_label}</span>` : ""}</td>
             <td><div class="rec-reasons-cell">${reasonsHtml}${moreTag}</div></td>
             <td>
                 <div class="action-cell">
@@ -325,22 +330,70 @@ function showDetails(stock) {
            </select>`
         : "";
 
+    const newsAdj = stock.news_adjustment || 0;
+    const riskFlags = stock.risk_flags || [];
+    const posCatalysts = stock.positive_catalysts || [];
+    const flagsHtml = [
+        ...riskFlags.map((f) => `<span class="news-flag flag-risk">${f}</span>`),
+        ...posCatalysts.map((f) => `<span class="news-flag flag-catalyst">${f}</span>`),
+    ].join("");
+
+    const newsAnalysisHtml = stock.sentiment_label ? `
+        <h4 style="margin: 20px 0 8px;">News Analysis</h4>
+        <div class="news-analysis-section">
+            <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+                <span class="sentiment-badge sentiment-badge-${stock.sentiment_label}">
+                    ${sentimentTitle(stock.sentiment_label)}
+                </span>
+                <span class="hint">${stock.news_headline_count || 0} headline${(stock.news_headline_count || 0) !== 1 ? "s" : ""} analyzed</span>
+            </div>
+            ${stock.news_summary ? `<p class="news-summary">${stock.news_summary}</p>` : ""}
+            ${flagsHtml ? `<div class="news-flags">${flagsHtml}</div>` : ""}
+            <div style="margin-top:10px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+                <span class="hint">News adjustment: <strong class="${toneClass(newsAdj)}">${newsAdj > 0 ? "+" : ""}${newsAdj}</strong> pts</span>
+                ${stock.final_stance ? `<span class="hint">Stance: <strong>${stock.final_stance}</strong></span>` : ""}
+            </div>
+        </div>
+    ` : "";
+
     recOverlayBody.innerHTML = `
-        <div style="display:flex; align-items:center; gap:10px; margin-bottom:16px;">
+        <div style="display:flex; align-items:center; gap:10px; margin-bottom:16px; flex-wrap:wrap;">
             <span class="rec-score-badge ${scoreColorClass(stock.recommendation_score)}" style="font-size:1.1rem; padding:8px 14px;">
                 Score: ${stock.recommendation_score} / 100
             </span>
+            ${stock.sentiment_label ? `<span class="sentiment-badge sentiment-badge-${stock.sentiment_label}">${sentimentTitle(stock.sentiment_label)}</span>` : ""}
             <span class="hint">${stock.sector} · ${stock.industry}</span>
         </div>
+
+        ${stock.base_score != null ? `
+        <div class="score-breakdown">
+            <div class="score-part">
+                <span class="box-label">Base Score</span>
+                <strong>${stock.base_score}</strong>
+            </div>
+            <span class="score-op">+</span>
+            <div class="score-part">
+                <span class="box-label">News Adjust</span>
+                <strong class="${toneClass(newsAdj)}">${newsAdj > 0 ? "+" : ""}${newsAdj}</strong>
+            </div>
+            <span class="score-op">=</span>
+            <div class="score-part">
+                <span class="box-label">Final Score</span>
+                <strong>${stock.recommendation_score}</strong>
+            </div>
+        </div>
+        ` : ""}
 
         ${metricsGrid}
 
         <h4 style="margin: 20px 0 8px;">Why Recommended</h4>
         <ul class="rec-reasons-list">${reasonsList}</ul>
 
-        <h4 style="margin: 20px 0 8px;">Recent News</h4>
+        ${newsAnalysisHtml}
+
+        <h4 style="margin: 20px 0 8px;">Recent Headlines</h4>
         <div id="detail-news" class="rec-news-section">
-            <p class="hint">Loading news\u2026</p>
+            <p class="hint">Loading headlines\u2026</p>
         </div>
 
         <div style="display:flex; align-items:center; gap:8px; margin-top:20px; flex-wrap:wrap;">

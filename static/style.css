@@ -1322,6 +1322,125 @@ button:disabled {
     font-weight: 600;
 }
 
+/* ---------- Sentiment word (table score column) ---------- */
+
+.sentiment-word {
+    display: inline-block;
+    margin-left: 6px;
+    font-size: 0.76rem;
+    font-weight: 700;
+    text-transform: capitalize;
+    vertical-align: middle;
+    cursor: help;
+}
+
+.sentiment-word.sentiment-positive { color: var(--positive); }
+.sentiment-word.sentiment-neutral  { color: var(--neutral); }
+.sentiment-word.sentiment-negative { color: var(--negative); }
+
+/* ---------- Sentiment badge (overlay & analysis section) ---------- */
+
+.sentiment-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 12px;
+    border-radius: 999px;
+    font-size: 0.84rem;
+    font-weight: 700;
+    white-space: nowrap;
+}
+
+.sentiment-badge-positive {
+    background: #e8f7f1;
+    color: var(--positive);
+}
+
+.sentiment-badge-neutral {
+    background: #fff7df;
+    color: var(--neutral);
+}
+
+.sentiment-badge-negative {
+    background: #fff0f0;
+    color: var(--negative);
+}
+
+/* ---------- Score breakdown (overlay) ---------- */
+
+.score-breakdown {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin-bottom: 16px;
+    padding: 10px 14px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: var(--panel-bg);
+    font-size: 0.88rem;
+}
+
+.score-part {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+}
+
+.score-part .box-label {
+    margin-bottom: 0;
+    font-size: 0.76rem;
+}
+
+.score-op {
+    font-weight: 700;
+    color: var(--muted);
+    font-size: 1rem;
+}
+
+/* ---------- News analysis section (overlay) ---------- */
+
+.news-analysis-section {
+    margin: 0 0 8px;
+    padding: 14px;
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    background: var(--panel-bg);
+}
+
+.news-summary {
+    margin: 10px 0 0;
+    font-size: 0.92rem;
+    line-height: 1.55;
+    color: var(--text);
+}
+
+.news-flags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 8px;
+}
+
+.news-flag {
+    display: inline-block;
+    padding: 3px 8px;
+    border-radius: 6px;
+    font-size: 0.78rem;
+    font-weight: 600;
+}
+
+.flag-risk {
+    background: #fff0f0;
+    color: var(--negative);
+}
+
+.flag-catalyst {
+    background: #e8f7f1;
+    color: var(--positive);
+}
+
 @media (max-width: 900px) {
     .rec-filter-grid {
         grid-template-columns: repeat(2, 1fr);

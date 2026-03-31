@@ -1,15 +1,17 @@
 """
-Recommendation engine – transparent, rule-based stock screener.
+Recommendation engine – transparent, rule-based stock screener with news overlay.
 
-Scores stocks on two axes:
+Uses a **3-layer** scoring architecture:
 
-  A. **Currently low** (0–50 pts)
+  **Layer 1 – Quantitative base score (0–100)**
+
+  A. *Currently low* (0–50 pts)
      - Percent below 52-week high        (0–20 pts)
      - Closeness to 52-week low           (0–15 pts)
      - Negative recent 1-month return     (0–10 pts)
      - Below 200-day moving average       (0–5 pts)
 
-  B. **Strong financials** (0–50 pts)
+  B. *Strong financials* (0–50 pts)
      - Positive net income                (0–10 pts)
      - Positive operating cash flow       (0–10 pts)
      - Positive free cash flow            (0–10 pts)
@@ -17,9 +19,16 @@ Scores stocks on two axes:
      - Debt/equity ≤ 1.5                  (0–7 pts)
      - Positive return on equity          (0–5 pts)
 
-Total score is 0–100.  Higher = more "beaten-down yet financially healthy".
+  **Layer 2 – News analysis**
+     - Analyse recent headlines per ticker
+     - Classify overall sentiment: positive / neutral / negative
+     - Produce a bounded additive adjustment (default ±10 pts)
 
-All thresholds live in ``WEIGHT_CONFIG`` so they can be tuned in one place.
+  **Layer 3 – Final score**
+     ``final_score = clamp(base_score + news_adjustment, 0, 100)``
+
+The news layer refines but never replaces the quantitative score.
+All thresholds live in ``WEIGHT_CONFIG`` / ``news_analysis`` constants.
 """
 
 from __future__ import annotations
@@ -32,6 +41,11 @@ from typing import Any, Optional
 import yfinance as yf
 
 import database as db
+from services.news_analysis import (
+    analyze_headlines,
+    compute_final_score,
+    get_final_stance,
+)
 from services.stock_universe import get_candidates
 
 logger = logging.getLogger(__name__)
@@ -69,6 +83,7 @@ WEIGHT_CONFIG = {
 }
 
 CACHE_TTL_HOURS = 24
+NEWS_CACHE_TTL_HOURS = 4
 
 
 # ---------------------------------------------------------------------------
@@ -295,11 +310,7 @@ def apply_filters(
 
 
 # ---------------------------------------------------------------------------
-# Orchestration  (main entry point for the route)
-# ---------------------------------------------------------------------------
-
-# ---------------------------------------------------------------------------
-# News  (on-demand, not part of the scoring pipeline)
+# News fetching  (used by API route and by the enrichment pipeline)
 # ---------------------------------------------------------------------------
 
 def get_ticker_news(ticker: str, max_items: int = 8) -> list[dict[str, Any]]:
@@ -327,6 +338,102 @@ def get_ticker_news(ticker: str, max_items: int = 8) -> list[dict[str, Any]]:
             "published": pub_date,
         })
     return items
+
+
+# ---------------------------------------------------------------------------
+# News enrichment  (Layer 2 + 3 integration)
+# ---------------------------------------------------------------------------
+
+
+def _neutral_news_fields() -> dict[str, Any]:
+    """Default news fields when analysis is unavailable."""
+    return {
+        "sentiment_label": "neutral",
+        "sentiment_icon_color": "yellow",
+        "news_adjustment": 0.0,
+        "news_summary": "News analysis unavailable.",
+        "news_headline_count": 0,
+        "risk_flags": [],
+        "positive_catalysts": [],
+        "final_stance": "",
+    }
+
+
+def _get_news_analysis(ticker: str) -> dict[str, Any]:
+    """Fetch + analyse news for *ticker*, using the DB cache when fresh."""
+    cached = db.get_news_analysis_cache(ticker)
+    if cached:
+        try:
+            expires = datetime.fromisoformat(cached["expires_at"])
+            if datetime.utcnow() < expires:
+                return cached
+        except (KeyError, ValueError):
+            pass
+
+    headlines = get_ticker_news(ticker)
+    analysis = analyze_headlines(headlines)
+
+    analysis["analyzed_at"] = datetime.utcnow().isoformat()
+    analysis["expires_at"] = (
+        datetime.utcnow() + timedelta(hours=NEWS_CACHE_TTL_HOURS)
+    ).isoformat()
+
+    try:
+        db.upsert_news_analysis_cache(ticker, analysis)
+    except Exception:
+        logger.warning("News cache write failed for %s", ticker)
+
+    return analysis
+
+
+def _apply_news_fields(result: dict[str, Any], analysis: dict[str, Any]) -> None:
+    """Apply Layer 2 analysis + Layer 3 final score onto a result dict."""
+    base_score = result["base_score"]
+    adjustment = analysis.get("news_adjustment", 0.0)
+    final = compute_final_score(base_score, adjustment)
+    label = analysis.get("sentiment_label", "neutral")
+
+    result["recommendation_score"] = final
+    result["sentiment_label"] = label
+    result["sentiment_icon_color"] = analysis.get("sentiment_icon_color", "yellow")
+    result["news_adjustment"] = adjustment
+    result["news_summary"] = analysis.get("summary", "")
+    result["news_headline_count"] = analysis.get("headline_count", 0)
+    result["risk_flags"] = analysis.get("risk_flags", [])
+    result["positive_catalysts"] = analysis.get("positive_catalysts", [])
+    result["final_stance"] = get_final_stance(final, label)
+
+
+def _enrich_with_news(results: list[dict[str, Any]]) -> None:
+    """Add news analysis to every result dict (Layer 2 + Layer 3).
+
+    Runs news fetches concurrently.  If analysis fails for a ticker the
+    neutral fallback is kept (applied before this function is called).
+    """
+    neutral = analyze_headlines([])
+
+    # Pre-fill with neutral defaults so failures are safe
+    for r in results:
+        _apply_news_fields(r, neutral)
+
+    def _do_analysis(ticker: str) -> dict[str, Any]:
+        return _get_news_analysis(ticker)
+
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
+        futures = {
+            pool.submit(_do_analysis, r["ticker"]): r for r in results
+        }
+        for future in as_completed(futures):
+            result = futures[future]
+            try:
+                analysis = future.result()
+            except Exception:
+                logger.warning(
+                    "News analysis failed for %s – using neutral fallback",
+                    result["ticker"],
+                )
+                continue
+            _apply_news_fields(result, analysis)
 
 
 # ---------------------------------------------------------------------------
@@ -417,9 +524,19 @@ def get_recommendations(
             "revenue_growth": data.get("revenue_growth"),
             "debt_to_equity": data.get("debt_to_equity"),
             "roe": data.get("roe"),
+            "base_score": rec_score,
             "recommendation_score": rec_score,
             "reasons": reasons,
         })
+
+    # Layer 2 + 3: enrich with news analysis & compute final scores
+    try:
+        _enrich_with_news(results)
+    except Exception:
+        logger.exception("News enrichment failed – using base scores only")
+        for r in results:
+            r.update(_neutral_news_fields())
+            r.setdefault("base_score", r["recommendation_score"])
 
     key_fn = SORT_OPTIONS.get(sort_by, SORT_OPTIONS["score"])
     reverse = True
