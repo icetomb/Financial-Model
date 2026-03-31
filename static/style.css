@@ -1235,17 +1235,20 @@ button:disabled {
 .rec-reasons-cell {
     white-space: normal;
     max-width: 280px;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
 }
 
 .rec-reason-tag {
-    display: inline-block;
+    display: block;
     padding: 2px 8px;
-    margin: 2px;
     border-radius: 6px;
     font-size: 0.76rem;
     font-weight: 600;
     background: #eef3ff;
     color: var(--accent);
+    width: fit-content;
 }
 
 .rec-reason-more {
