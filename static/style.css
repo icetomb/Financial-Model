@@ -1154,3 +1154,136 @@ button:disabled {
 .value-muted {
     color: var(--muted);
 }
+
+/* ==========================================================================
+   Recommendations page
+   ========================================================================== */
+
+.rec-filter-form {
+    margin-top: 20px;
+}
+
+.rec-filter-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 14px;
+    align-items: end;
+}
+
+.rec-filter-field label {
+    display: block;
+    font-weight: 700;
+    font-size: 0.88rem;
+    margin-bottom: 5px;
+}
+
+.rec-filter-field .filter-select {
+    width: 100%;
+}
+
+.rec-filter-checkbox {
+    display: flex;
+    align-items: center;
+}
+
+.rec-filter-checkbox label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-weight: 600;
+    font-size: 0.92rem;
+    cursor: pointer;
+    margin-bottom: 0;
+}
+
+.rec-filter-checkbox input[type="checkbox"] {
+    width: 18px;
+    height: 18px;
+    flex: none;
+    accent-color: var(--accent);
+    cursor: pointer;
+}
+
+.rec-filter-actions {
+    margin-top: 16px;
+}
+
+.rec-score-badge {
+    display: inline-block;
+    padding: 4px 10px;
+    border-radius: 999px;
+    font-size: 0.84rem;
+    font-weight: 700;
+    white-space: nowrap;
+}
+
+.rec-score-high {
+    background: #e8f7f1;
+    color: var(--positive);
+}
+
+.rec-score-mid {
+    background: #fff7df;
+    color: var(--neutral);
+}
+
+.rec-score-low {
+    background: #fff0f0;
+    color: var(--negative);
+}
+
+.rec-reasons-cell {
+    white-space: normal;
+    max-width: 280px;
+}
+
+.rec-reason-tag {
+    display: inline-block;
+    padding: 2px 8px;
+    margin: 2px;
+    border-radius: 6px;
+    font-size: 0.76rem;
+    font-weight: 600;
+    background: #eef3ff;
+    color: var(--accent);
+}
+
+.rec-reason-more {
+    background: #f0f3f7;
+    color: var(--muted);
+}
+
+.rec-company-cell {
+    max-width: 160px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.rec-reasons-list {
+    margin: 0;
+    padding-left: 20px;
+    line-height: 1.8;
+    color: var(--text);
+    font-size: 0.92rem;
+}
+
+.rec-reasons-list li {
+    padding: 2px 0;
+}
+
+@keyframes rec-pulse {
+    0%, 100% { opacity: 0.6; }
+    50% { opacity: 1; }
+}
+
+@media (max-width: 900px) {
+    .rec-filter-grid {
+        grid-template-columns: repeat(2, 1fr);
+    }
+}
+
+@media (max-width: 640px) {
+    .rec-filter-grid {
+        grid-template-columns: 1fr;
+    }
+}

@@ -10,6 +10,8 @@ import database as db
 from models.model_1 import PredictionError
 from models.model_1 import build_prediction as build_prediction_m1
 from models.model_2 import build_prediction as build_prediction_m2
+from services.recommendations import get_recommendations
+from services.stock_universe import get_industries, get_sectors
 
 # Maps model names to their build_prediction functions.
 # Adding a future Model 3 means importing it and adding one entry here.
@@ -55,6 +57,58 @@ def create_app() -> Flask:
     @app.get("/predictions")
     def predictions_page():
         return render_template("predictions.html", active_page="predictions")
+
+    @app.get("/recommendations")
+    def recommendations_page():
+        return render_template(
+            "recommendations.html",
+            active_page="recommendations",
+            sectors=get_sectors(),
+        )
+
+    # ------------------------------------------------------------------
+    # Recommendations API
+    # ------------------------------------------------------------------
+
+    @app.get("/api/recommendations")
+    def api_get_recommendations():
+        """Run the recommendation engine with optional filters."""
+        sector = request.args.get("sector") or None
+        industry = request.args.get("industry") or None
+        sort_by = request.args.get("sort_by", "score")
+
+        try:
+            limit = int(request.args.get("limit", 20))
+        except (TypeError, ValueError):
+            limit = 20
+
+        try:
+            min_market_cap = float(request.args.get("min_market_cap", 0))
+        except (TypeError, ValueError):
+            min_market_cap = 0
+
+        profitable_only = request.args.get("profitable_only", "").lower() in ("1", "true", "yes")
+
+        try:
+            results = get_recommendations(
+                sector=sector,
+                industry=industry,
+                limit=limit,
+                min_market_cap=min_market_cap,
+                profitable_only=profitable_only,
+                sort_by=sort_by,
+            )
+        except Exception:
+            app.logger.exception("Recommendation engine error")
+            return jsonify({"error": "Failed to generate recommendations."}), 500
+
+        return jsonify(results)
+
+    @app.get("/api/industries")
+    def api_get_industries():
+        """Return industries for a given sector (or all if none specified)."""
+        sector = request.args.get("sector") or None
+        return jsonify(get_industries(sector))
 
     # ------------------------------------------------------------------
     # Predict API  (supports model selection via model_name in payload)
