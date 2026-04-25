@@ -1,9 +1,10 @@
 """
 SQLite database layer for the stock prediction tracker.
 
-Manages two tables:
-  - watchlist  : tickers the user wants to track over time
-  - predictions: saved Model 1 (and future model) predictions with evaluation data
+Manages three tables:
+  - watchlist          : tickers the user wants to track over time
+  - predictions        : saved Model 1 (and future model) predictions with evaluation data
+  - fundamentals_cache : cached per-ticker financial snapshots for recommendations
 
 The database file (financial_model.db) is created automatically on first run.
 """
@@ -11,7 +12,7 @@ The database file (financial_model.db) is created automatically on first run.
 from __future__ import annotations
 
 import sqlite3
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 DB_PATH = "financial_model.db"
 
@@ -39,6 +40,43 @@ def init_db() -> None:
             is_owned     INTEGER DEFAULT 0,
             is_active    INTEGER DEFAULT 1,
             date_added   TEXT    NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS fundamentals_cache (
+            ticker             TEXT PRIMARY KEY,
+            company_name       TEXT DEFAULT '',
+            sector             TEXT DEFAULT '',
+            industry           TEXT DEFAULT '',
+            current_price      REAL,
+            week52_high        REAL,
+            week52_low         REAL,
+            ma200              REAL,
+            month_return       REAL,
+            market_cap         REAL,
+            net_income         REAL,
+            operating_cashflow REAL,
+            free_cashflow      REAL,
+            revenue_growth     REAL,
+            debt_to_equity     REAL,
+            roe                REAL,
+            last_updated       TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS news_analysis_cache (
+            ticker              TEXT PRIMARY KEY,
+            sentiment_label     TEXT    NOT NULL DEFAULT 'neutral',
+            sentiment_icon_color TEXT   NOT NULL DEFAULT 'yellow',
+            news_adjustment     REAL    NOT NULL DEFAULT 0,
+            summary             TEXT    NOT NULL DEFAULT '',
+            headline_count      INTEGER NOT NULL DEFAULT 0,
+            positive_count      INTEGER NOT NULL DEFAULT 0,
+            negative_count       INTEGER NOT NULL DEFAULT 0,
+            neutral_count       INTEGER NOT NULL DEFAULT 0,
+            sentiment_score     REAL    NOT NULL DEFAULT 0,
+            risk_flags          TEXT    DEFAULT '[]',
+            positive_catalysts  TEXT    DEFAULT '[]',
+            analyzed_at         TEXT    NOT NULL,
+            expires_at          TEXT    NOT NULL
         );
 
         CREATE TABLE IF NOT EXISTS predictions (
@@ -265,6 +303,144 @@ def evaluate_prediction(
     conn.commit()
     conn.close()
 
+
+# ---------------------------------------------------------------------------
+# Fundamentals cache
+# ---------------------------------------------------------------------------
+
+_CACHE_FIELDS = (
+    "ticker", "company_name", "sector", "industry", "current_price",
+    "week52_high", "week52_low", "ma200", "month_return", "market_cap",
+    "net_income", "operating_cashflow", "free_cashflow", "revenue_growth",
+    "debt_to_equity", "roe",
+)
+
+
+def get_fundamentals_cache(ticker: str) -> dict | None:
+    """Return cached fundamentals for *ticker*, or None if not cached."""
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT * FROM fundamentals_cache WHERE ticker = ?", (ticker.upper(),)
+    ).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def upsert_fundamentals_cache(data: dict) -> None:
+    """Insert or update a fundamentals cache row."""
+    conn = get_connection()
+    values = tuple(data.get(f) for f in _CACHE_FIELDS)
+    placeholders = ", ".join("?" for _ in _CACHE_FIELDS)
+    columns = ", ".join(_CACHE_FIELDS)
+    set_clause = ", ".join(f"{f} = excluded.{f}" for f in _CACHE_FIELDS if f != "ticker")
+
+    conn.execute(
+        f"""
+        INSERT INTO fundamentals_cache ({columns}, last_updated)
+        VALUES ({placeholders}, ?)
+        ON CONFLICT(ticker) DO UPDATE SET
+            {set_clause},
+            last_updated = excluded.last_updated
+        """,
+        values + (datetime.now().isoformat(),),
+    )
+    conn.commit()
+    conn.close()
+
+
+def clear_stale_cache(max_age_hours: int = 24) -> int:
+    """Delete cache rows older than *max_age_hours*. Returns rows deleted."""
+    conn = get_connection()
+    cutoff = (datetime.now() - timedelta(hours=max_age_hours)).isoformat()
+    cursor = conn.execute(
+        "DELETE FROM fundamentals_cache WHERE last_updated < ?", (cutoff,)
+    )
+    conn.commit()
+    deleted = cursor.rowcount
+    conn.close()
+    return deleted
+
+
+# ---------------------------------------------------------------------------
+# News analysis cache
+# ---------------------------------------------------------------------------
+
+_NEWS_CACHE_FIELDS = (
+    "sentiment_label", "sentiment_icon_color", "news_adjustment", "summary",
+    "headline_count", "positive_count", "negative_count", "neutral_count",
+    "sentiment_score",
+)
+
+
+def get_news_analysis_cache(ticker: str) -> dict | None:
+    """Return cached news analysis for *ticker*, or None."""
+    import json as _json
+
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT * FROM news_analysis_cache WHERE ticker = ?", (ticker.upper(),)
+    ).fetchone()
+    conn.close()
+    if not row:
+        return None
+    result = dict(row)
+    result["risk_flags"] = _json.loads(result.get("risk_flags") or "[]")
+    result["positive_catalysts"] = _json.loads(result.get("positive_catalysts") or "[]")
+    return result
+
+
+def upsert_news_analysis_cache(ticker: str, analysis: dict) -> None:
+    """Insert or update a news analysis cache row."""
+    import json as _json
+
+    conn = get_connection()
+    conn.execute(
+        """
+        INSERT INTO news_analysis_cache
+            (ticker, sentiment_label, sentiment_icon_color, news_adjustment,
+             summary, headline_count, positive_count, negative_count,
+             neutral_count, sentiment_score, risk_flags, positive_catalysts,
+             analyzed_at, expires_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(ticker) DO UPDATE SET
+            sentiment_label      = excluded.sentiment_label,
+            sentiment_icon_color = excluded.sentiment_icon_color,
+            news_adjustment      = excluded.news_adjustment,
+            summary              = excluded.summary,
+            headline_count       = excluded.headline_count,
+            positive_count       = excluded.positive_count,
+            negative_count       = excluded.negative_count,
+            neutral_count        = excluded.neutral_count,
+            sentiment_score      = excluded.sentiment_score,
+            risk_flags           = excluded.risk_flags,
+            positive_catalysts   = excluded.positive_catalysts,
+            analyzed_at          = excluded.analyzed_at,
+            expires_at           = excluded.expires_at
+        """,
+        (
+            ticker.upper(),
+            analysis.get("sentiment_label", "neutral"),
+            analysis.get("sentiment_icon_color", "yellow"),
+            analysis.get("news_adjustment", 0.0),
+            analysis.get("summary", ""),
+            analysis.get("headline_count", 0),
+            analysis.get("positive_count", 0),
+            analysis.get("negative_count", 0),
+            analysis.get("neutral_count", 0),
+            analysis.get("sentiment_score", 0.0),
+            _json.dumps(analysis.get("risk_flags", [])),
+            _json.dumps(analysis.get("positive_catalysts", [])),
+            analysis.get("analyzed_at", datetime.now().isoformat()),
+            analysis.get("expires_at", datetime.now().isoformat()),
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Model performance
+# ---------------------------------------------------------------------------
 
 def get_model_performance(model_name: str = "Model 1") -> dict:
     """Aggregate performance metrics for a model."""
