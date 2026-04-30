@@ -10,6 +10,7 @@ import database as db
 from models.model_1 import PredictionError
 from models.model_1 import build_prediction as build_prediction_m1
 from models.model_2 import build_prediction as build_prediction_m2
+from services.downside_risk import get_downside_risk_stocks, get_stock_news
 from services.recommendations import get_recommendations, get_ticker_news
 from services.stock_universe import get_industries, get_sectors
 
@@ -117,6 +118,59 @@ def create_app() -> Flask:
             news = get_ticker_news(ticker.upper())
         except Exception:
             app.logger.exception("News fetch error for %s", ticker)
+            return jsonify([])
+        return jsonify(news)
+
+    # ------------------------------------------------------------------
+    # Downside Risk Scanner API  (Likely Decliners)
+    # ------------------------------------------------------------------
+
+    @app.get("/api/downside-risk")
+    def api_get_downside_risk():
+        """Run the downside-risk scanner with optional filters.
+
+        Returns ranked "likely decliners" – stocks showing technical
+        weakness, negative model forecasts, or other downside signals.
+        News sentiment is included as contextual information only and
+        does NOT distort the quantitative score.
+        """
+        sector = request.args.get("sector") or None
+        industry = request.args.get("industry") or None
+
+        try:
+            limit = int(request.args.get("limit", 20))
+        except (TypeError, ValueError):
+            limit = 20
+
+        try:
+            min_market_cap = float(request.args.get("min_market_cap", 0))
+        except (TypeError, ValueError):
+            min_market_cap = 0
+
+        # Allow callers to skip the slow Model 1 pass (default is to use it).
+        use_model = request.args.get("use_model", "1").lower() in ("1", "true", "yes")
+
+        try:
+            results = get_downside_risk_stocks(
+                sector=sector,
+                industry=industry,
+                limit=limit,
+                min_market_cap=min_market_cap,
+                use_model=use_model,
+            )
+        except Exception:
+            app.logger.exception("Downside risk scanner error")
+            return jsonify({"error": "Failed to scan for downside risk."}), 500
+
+        return jsonify(results)
+
+    @app.get("/api/downside-risk/news/<ticker>")
+    def api_get_downside_risk_news(ticker: str):
+        """Recent news for a decliner with relative-time strings included."""
+        try:
+            news = get_stock_news(ticker.upper())
+        except Exception:
+            app.logger.exception("Downside news fetch error for %s", ticker)
             return jsonify([])
         return jsonify(news)
 

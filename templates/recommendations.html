@@ -7,120 +7,231 @@
     <p class="eyebrow">Recommendations</p>
     <h1>Stock Screener</h1>
     <p class="description">
-        Find stocks that are trading at relatively low levels but still have strong
-        financials. Each stock is scored 0–100 based on transparent, rule-based
-        criteria — no black-box models.
+        Two complementary views: <strong>Likely Gainers</strong> highlights stocks
+        that are trading low but financially strong, while <strong>Likely Decliners</strong>
+        highlights stocks showing technical weakness or downside risk. Both are
+        rule-based and transparent — this is risk analysis, not financial advice.
     </p>
 
-    <!-- Filter controls -->
-    <form id="rec-filters" class="rec-filter-form">
-        <div class="rec-filter-grid">
-            <div class="rec-filter-field">
-                <label for="rec-sector">Sector</label>
-                <select id="rec-sector" class="filter-select">
-                    <option value="">All Sectors</option>
-                    {% for s in sectors %}
-                    <option value="{{ s }}">{{ s }}</option>
-                    {% endfor %}
-                </select>
-            </div>
-            <div class="rec-filter-field">
-                <label for="rec-industry">Industry</label>
-                <select id="rec-industry" class="filter-select">
-                    <option value="">All Industries</option>
-                </select>
-            </div>
-            <div class="rec-filter-field">
-                <label for="rec-min-cap">Min Market Cap</label>
-                <select id="rec-min-cap" class="filter-select">
-                    <option value="0">Any</option>
-                    <option value="1000000000" selected>$1 B+</option>
-                    <option value="10000000000">$10 B+</option>
-                    <option value="50000000000">$50 B+</option>
-                    <option value="200000000000">$200 B+</option>
-                </select>
-            </div>
-            <div class="rec-filter-field">
-                <label for="rec-limit">Results</label>
-                <select id="rec-limit" class="filter-select">
-                    <option value="10">10</option>
-                    <option value="20" selected>20</option>
-                    <option value="50">50</option>
-                </select>
-            </div>
-            <div class="rec-filter-field">
-                <label for="rec-sort">Sort By</label>
-                <select id="rec-sort" class="filter-select">
-                    <option value="score" selected>Score</option>
-                    <option value="pct_below_high">% Below High</option>
-                    <option value="market_cap">Market Cap</option>
-                    <option value="price">Price (low first)</option>
-                </select>
-            </div>
-            <div class="rec-filter-field rec-filter-checkbox">
-                <label>
-                    <input type="checkbox" id="rec-profitable" checked>
-                    Profitable only
-                </label>
-            </div>
-        </div>
+    <!-- Tab switcher -->
+    <div class="rec-tabs" role="tablist">
+        <button class="rec-tab active" data-tab="gainers" role="tab" aria-selected="true">
+            Likely Gainers
+        </button>
+        <button class="rec-tab" data-tab="decliners" role="tab" aria-selected="false">
+            Likely Decliners
+        </button>
+    </div>
 
-        <div class="rec-filter-actions">
-            <button id="rec-submit" type="submit">Find Recommendations</button>
-        </div>
-    </form>
+    <!-- ============================================================== -->
+    <!-- TAB: Likely Gainers                                              -->
+    <!-- ============================================================== -->
+    <div id="rec-pane-gainers" class="rec-pane">
 
-    <!-- Feedback -->
-    <div id="rec-message" class="panel panel-success hidden" aria-live="polite"></div>
-    <div id="rec-error" class="panel panel-error hidden" aria-live="polite"></div>
+        <!-- Filter controls -->
+        <form id="rec-filters" class="rec-filter-form">
+            <div class="rec-filter-grid">
+                <div class="rec-filter-field">
+                    <label for="rec-sector">Sector</label>
+                    <select id="rec-sector" class="filter-select">
+                        <option value="">All Sectors</option>
+                        {% for s in sectors %}
+                        <option value="{{ s }}">{{ s }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="rec-filter-field">
+                    <label for="rec-industry">Industry</label>
+                    <select id="rec-industry" class="filter-select">
+                        <option value="">All Industries</option>
+                    </select>
+                </div>
+                <div class="rec-filter-field">
+                    <label for="rec-min-cap">Min Market Cap</label>
+                    <select id="rec-min-cap" class="filter-select">
+                        <option value="0">Any</option>
+                        <option value="1000000000" selected>$1 B+</option>
+                        <option value="10000000000">$10 B+</option>
+                        <option value="50000000000">$50 B+</option>
+                        <option value="200000000000">$200 B+</option>
+                    </select>
+                </div>
+                <div class="rec-filter-field">
+                    <label for="rec-limit">Results</label>
+                    <select id="rec-limit" class="filter-select">
+                        <option value="10">10</option>
+                        <option value="20" selected>20</option>
+                        <option value="50">50</option>
+                    </select>
+                </div>
+                <div class="rec-filter-field">
+                    <label for="rec-sort">Sort By</label>
+                    <select id="rec-sort" class="filter-select">
+                        <option value="score" selected>Score</option>
+                        <option value="pct_below_high">% Below High</option>
+                        <option value="market_cap">Market Cap</option>
+                        <option value="price">Price (low first)</option>
+                    </select>
+                </div>
+                <div class="rec-filter-field rec-filter-checkbox">
+                    <label>
+                        <input type="checkbox" id="rec-profitable" checked>
+                        Profitable only
+                    </label>
+                </div>
+            </div>
 
-    <!-- Loading indicator -->
-    <section id="rec-loading" class="panel hidden" aria-live="polite">
-        <div class="status-row">
-            <span class="status-title">Scanning stocks and computing scores&hellip;</span>
-        </div>
-        <div class="progress-track">
-            <div id="rec-progress-bar" class="progress-bar" style="width:100%; animation: rec-pulse 1.5s ease-in-out infinite;"></div>
-        </div>
-        <p class="panel-note">
-            Fetching price data and financials for each candidate. This may take a
-            moment on the first run — subsequent loads will use cached data.
+            <div class="rec-filter-actions">
+                <button id="rec-submit" type="submit">Find Recommendations</button>
+            </div>
+        </form>
+
+        <!-- Feedback -->
+        <div id="rec-message" class="panel panel-success hidden" aria-live="polite"></div>
+        <div id="rec-error" class="panel panel-error hidden" aria-live="polite"></div>
+
+        <!-- Loading indicator -->
+        <section id="rec-loading" class="panel hidden" aria-live="polite">
+            <div class="status-row">
+                <span class="status-title">Scanning stocks and computing scores&hellip;</span>
+            </div>
+            <div class="progress-track">
+                <div id="rec-progress-bar" class="progress-bar" style="width:100%; animation: rec-pulse 1.5s ease-in-out infinite;"></div>
+            </div>
+            <p class="panel-note">
+                Fetching price data and financials for each candidate. This may take a
+                moment on the first run — subsequent loads will use cached data.
+            </p>
+        </section>
+
+        <!-- Results -->
+        <section id="rec-results" class="panel hidden" style="margin-top:22px;">
+            <div class="section-header">
+                <h3 style="margin:0;" id="rec-results-title">Recommendations</h3>
+                <span id="rec-results-count" class="hint"></span>
+            </div>
+
+            <div id="rec-empty" class="empty-state hidden">
+                No stocks matched your filters. Try broadening your criteria.
+            </div>
+
+            <div class="table-wrap">
+                <table id="rec-table" class="data-table hidden">
+                    <thead>
+                        <tr>
+                            <th>Rank</th>
+                            <th>Ticker</th>
+                            <th>Company</th>
+                            <th>Price</th>
+                            <th>52w High</th>
+                            <th>% Below High</th>
+                            <th>Score</th>
+                            <th>Why Recommended</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="rec-body"></tbody>
+                </table>
+            </div>
+        </section>
+    </div>
+
+    <!-- ============================================================== -->
+    <!-- TAB: Likely Decliners                                            -->
+    <!-- ============================================================== -->
+    <div id="rec-pane-decliners" class="rec-pane hidden">
+        <p class="hint" style="margin-top:14px;">
+            Scans for stocks showing technical weakness, negative momentum,
+            or model-flagged downside risk. News sentiment is shown for
+            context but does <em>not</em> change the score.
         </p>
-    </section>
 
-    <!-- Results -->
-    <section id="rec-results" class="panel hidden" style="margin-top:22px;">
-        <div class="section-header">
-            <h3 style="margin:0;" id="rec-results-title">Recommendations</h3>
-            <span id="rec-results-count" class="hint"></span>
-        </div>
+        <!-- Filter controls -->
+        <form id="dec-filters" class="rec-filter-form">
+            <div class="rec-filter-grid">
+                <div class="rec-filter-field">
+                    <label for="dec-sector">Sector</label>
+                    <select id="dec-sector" class="filter-select">
+                        <option value="">All Sectors</option>
+                        {% for s in sectors %}
+                        <option value="{{ s }}">{{ s }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="rec-filter-field">
+                    <label for="dec-industry">Industry</label>
+                    <select id="dec-industry" class="filter-select">
+                        <option value="">All Industries</option>
+                    </select>
+                </div>
+                <div class="rec-filter-field">
+                    <label for="dec-min-cap">Min Market Cap</label>
+                    <select id="dec-min-cap" class="filter-select">
+                        <option value="0">Any</option>
+                        <option value="1000000000" selected>$1 B+</option>
+                        <option value="10000000000">$10 B+</option>
+                        <option value="50000000000">$50 B+</option>
+                        <option value="200000000000">$200 B+</option>
+                    </select>
+                </div>
+                <div class="rec-filter-field">
+                    <label for="dec-limit">Results</label>
+                    <select id="dec-limit" class="filter-select">
+                        <option value="10">10</option>
+                        <option value="20" selected>20</option>
+                        <option value="50">50</option>
+                    </select>
+                </div>
+                <div class="rec-filter-field rec-filter-checkbox">
+                    <label>
+                        <input type="checkbox" id="dec-use-model" checked>
+                        Include Model 1 prediction
+                    </label>
+                </div>
+            </div>
 
-        <div id="rec-empty" class="empty-state hidden">
-            No stocks matched your filters. Try broadening your criteria.
-        </div>
+            <div class="rec-filter-actions">
+                <button id="dec-submit" type="submit">Find Likely Decliners</button>
+            </div>
+        </form>
 
-        <div class="table-wrap">
-            <table id="rec-table" class="data-table hidden">
-                <thead>
-                    <tr>
-                        <th>Rank</th>
-                        <th>Ticker</th>
-                        <th>Company</th>
-                        <th>Price</th>
-                        <th>52w High</th>
-                        <th>% Below High</th>
-                        <th>Score</th>
-                        <th>Why Recommended</th>
-                        <th>Actions</th>
-                    </tr>
-                </thead>
-                <tbody id="rec-body"></tbody>
-            </table>
-        </div>
-    </section>
+        <!-- Feedback -->
+        <div id="dec-message" class="panel panel-success hidden" aria-live="polite"></div>
+        <div id="dec-error" class="panel panel-error hidden" aria-live="polite"></div>
+
+        <!-- Loading indicator -->
+        <section id="dec-loading" class="panel hidden" aria-live="polite">
+            <div class="status-row">
+                <span class="status-title">Scanning for downside risk&hellip;</span>
+            </div>
+            <div class="progress-track">
+                <div class="progress-bar" style="width:100%; animation: rec-pulse 1.5s ease-in-out infinite;"></div>
+            </div>
+            <p class="panel-note">
+                Computing technical signals and (optionally) running Model 1
+                on top candidates. The first run may take a minute; results
+                are cached afterwards.
+            </p>
+        </section>
+
+        <!-- Results: card grid (NOT table — easier to scan downside info) -->
+        <section id="dec-results" class="panel hidden" style="margin-top:22px;">
+            <div class="section-header">
+                <h3 style="margin:0;" id="dec-results-title">Likely Decliners</h3>
+                <span id="dec-results-count" class="hint"></span>
+            </div>
+
+            <div id="dec-empty" class="empty-state hidden">
+                No clear decliners detected with these filters. Try broadening your criteria.
+            </div>
+
+            <div id="dec-cards" class="dec-cards"></div>
+        </section>
+    </div>
+
 </section>
 
-<!-- Overlay for stock details -->
+<!-- Overlay for stock details (shared between gainers and decliners) -->
 <div id="rec-overlay" class="overlay hidden">
     <div class="overlay-content card">
         <div class="overlay-header">
