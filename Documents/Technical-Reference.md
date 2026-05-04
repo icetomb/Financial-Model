@@ -10,6 +10,7 @@
    - [models/model_1.py — Technical Predictor](#modelsmodel_1py--technical-predictor)
    - [models/model_2.py — Market-Aware Predictor](#modelsmodel_2py--market-aware-predictor)
    - [services/recommendations.py — Screener Engine](#servicesrecommendationspy--screener-engine)
+   - [services/downside_risk.py — Downside Risk Scanner](#servicesdownside_riskpy--downside-risk-scanner)
    - [services/news_analysis.py — Sentiment Engine](#servicesnews_analysispy--sentiment-engine)
    - [services/stock_universe.py — Ticker Universe](#servicesstock_universepy--ticker-universe)
    - [tests/test_recommendations.py — Test Suite](#teststest_recommendationspy--test-suite)
@@ -30,7 +31,8 @@ Financial-Model/
 │   ├── model_1.py                  # XGBoost predictor (18 price features)
 │   └── model_2.py                  # XGBoost predictor (29 features + SPY/VIX)
 ├── services/
-│   ├── recommendations.py          # Screener engine + news enrichment
+│   ├── recommendations.py          # "Likely Gainers" screener + news enrichment
+│   ├── downside_risk.py            # "Likely Decliners" downside-risk scanner
 │   ├── news_analysis.py            # Keyword sentiment + recency scoring
 │   └── stock_universe.py           # Static ~200+ ticker universe
 ├── tests/
@@ -126,10 +128,12 @@ App factory. Calls `db.init_db()` on startup (creates tables if they don't exist
 | `POST` | `/api/predictions/evaluate` | Evaluates all pending predictions past their 30-day horizon |
 | `GET` | `/api/models` | Returns `["Model 1", "Model 2"]` |
 | `GET` | `/api/performance` | Returns `get_model_performance` aggregates |
-| `GET` | `/recommendations` | Renders `recommendations.html`, injects `sectors` list |
-| `GET` | `/api/recommendations` | Calls `get_recommendations(...)`, returns JSON |
+| `GET` | `/recommendations` | Renders `recommendations.html` (tabbed: Likely Gainers + Likely Decliners), injects `sectors` list |
+| `GET` | `/api/recommendations` | Calls `get_recommendations(...)`, returns ranked Likely Gainers as JSON |
 | `GET` | `/api/industries` | Returns industries, optional `?sector=` filter |
 | `GET` | `/api/news/<ticker>` | Fetches and analyzes news for a single ticker |
+| `GET` | `/api/downside-risk` | Calls `get_downside_risk_stocks(...)`, returns ranked Likely Decliners. Query params: `sector`, `industry`, `limit`, `min_market_cap`, `use_model` (default `1`). |
+| `GET` | `/api/downside-risk/news/<ticker>` | Recent headlines for a decliner with relative-time strings (e.g. "3h ago") attached. |
 
 **Evaluation Logic (inside `/api/predictions/evaluate`):**
 
@@ -410,6 +414,146 @@ Full screener pipeline:
 
 ---
 
+### `services/downside_risk.py` — Downside Risk Scanner
+
+**Purpose:** Mirror image of `recommendations.py` — scans the same universe for stocks showing **technical weakness, negative model forecasts, or downside risk**, and returns them as ranked "Likely Decliners". Implements a 3-layer pipeline that mirrors the recommendations engine's structure but with downside-oriented signals and a deliberately separated news layer.
+
+#### Configuration
+
+```python
+MAX_WORKERS = 8                # ThreadPoolExecutor size for parallel fetches
+NEWS_CACHE_TTL_HOURS = 4       # Layer 3 news sentiment cache lifetime
+MODEL_PRED_TTL_HOURS = 12      # Process-level Model 1 prediction cache TTL
+
+WEIGHT_CONFIG = {
+    # Model-driven (Layer 1.A)
+    "model_negative_return_max_pts": 25,
+    "model_negative_return_full":   -0.10,   # -10 % predicted -> full points
+
+    # Recent price action
+    "neg_month_return_max_pts": 15,
+    "neg_month_return_full":   -0.20,        # -20 % monthly return -> full
+    "neg_momentum_max_pts": 10,
+    "neg_momentum_full":   -0.10,            # -10 % over 10 days -> full
+    "below_ma50_pts":  8,
+    "below_ma200_pts": 7,
+
+    # Volatility & RSI
+    "high_volatility_max_pts": 10,
+    "high_volatility_full":    0.50,         # 50 % annualised vol -> full
+    "rsi_weakness_max_pts":   10,
+    "rsi_oversold_threshold": 30.0,
+    "rsi_overbought_threshold": 70.0,
+
+    # Range / volume
+    "near_52w_low_max_pts": 10,
+    "near_52w_low_full":    0.10,            # within bottom 30% of range -> scaled
+    "volume_spike_pts":     5,
+    "volume_spike_ratio":   1.5,             # today vol > 1.5x 10-day avg
+}
+
+RISK_LEVELS = [(70, "High"), (40, "Medium"), (0, "Low")]
+```
+
+#### 3-Layer Architecture
+
+| Layer | Function | What it does |
+|---|---|---|
+| **Layer 1** | `calculate_downside_risk_score(signals)` | Quantitative 0–100 downside score from technical + Model 1 signals only. |
+| **Layer 2** | `generate_downside_explanation(signals, fired)` | Beginner-friendly "Why Flagged" reason strings derived from which signals fired. |
+| **Layer 3** | `classify_news_sentiment(ticker)` | Recent yfinance headlines classified as positive / neutral / negative. **Display-only — never modifies the score.** |
+
+The strict separation between Layer 1 and Layer 3 is intentional: news sentiment is shown as a contextual green/yellow/red dot beside the score but is mathematically independent from it.
+
+#### Key Functions
+
+**`_download_price_history(ticker: str, days: int = 365) -> pd.DataFrame | None`**
+
+Downloads ~1 year of OHLCV data via `yf.download(..., auto_adjust=True, progress=False)`. Flattens MultiIndex columns; returns `None` on any failure (which is treated as "skip this ticker").
+
+**`_compute_signals(price_df, info) -> dict | None`**
+
+Reuses `add_features` and `add_rsi` from `models/model_1.py` to derive the 18-feature frame, then computes the additional signals the scanner needs:
+
+- `ma_50` (from existing column), `ma_200` (rolling mean from raw close)
+- `month_return` and `momentum_10d` from positional indexing on the close series
+- `volatility_annual` = `volatility_20 × sqrt(252)`
+- `rsi_14` (from `add_rsi`)
+- `week52_high`/`week52_low` from `Ticker.info`, with a fallback to historical max/min
+- `vol_spike_on_decline` = today's volume ≥ 1.5× the 10-day avg AND today's return < 0
+
+Returns a flat dict that the scoring layer can consume directly.
+
+**`_fetch_ticker_data(ticker: str) -> dict | None`**
+
+Combines `_download_price_history` and `_compute_signals` for a single ticker. Treats any missing field or fetch failure as "skip", so the scan never crashes on a bad ticker.
+
+**`calculate_downside_risk_score(signals: dict) -> tuple[float, list[tuple[str, float]]]`**
+
+Layer 1. Adds points for each signal that fires:
+
+| Signal | Max pts | Trigger |
+|---|---|---|
+| `model_negative_return` | 25 | Model 1 predicted return < 0 (full at –10 %) |
+| `neg_month_return` | 15 | 1-month return < 0 (full at –20 %) |
+| `neg_momentum` | 10 | 10-day return < 0 (full at –10 %) |
+| `below_ma50` | 8 | Current price < 50-day MA |
+| `below_ma200` | 7 | Current price < 200-day MA |
+| `high_volatility` | 10 | Annualised vol > 20 % (full at 50 %) |
+| `rsi_oversold` | 10 | RSI < 30, scaled by depth below 30 |
+| `rsi_overbought` | 10 | RSI > 70, scaled by depth above 70 |
+| `near_52w_low` | 10 | Bottom 30 % of 52-week range, scaled by closeness to low |
+| `vol_spike_on_decline` | 5 | Volume spike during a down day |
+
+Total caps at 100. Returns `(score, fired_signals)` where `fired_signals` is a list of `(key, points)` tuples used by the explanation layer.
+
+**`_risk_level(score: float) -> str`**
+
+Maps a 0–100 score to `Low` / `Medium` / `High` using `RISK_LEVELS` thresholds (0–39 / 40–69 / 70–100).
+
+**`generate_downside_explanation(signals, fired_signals) -> list[str]`**
+
+Layer 2. Translates each fired signal into a beginner-friendly reason string with the actual numeric values formatted in (e.g. `"Recent 1-month return is negative (-15.0%)."`, `"RSI is overbought (75), raising the risk of a pullback."`). Wording is intentionally cautious — never claims the stock will drop.
+
+**`get_stock_news(ticker: str, max_items: int = 8) -> list[dict]`**
+
+Wraps `services.recommendations.get_ticker_news` and adds a `relative_time` field (`"3h ago"`, `"2d ago"`, etc.) computed by `_relative_time` for display in the details overlay. Returns the spec's news object shape: `{title, publisher, link, published, relative_time}`.
+
+**`classify_news_sentiment(ticker: str) -> dict`**
+
+Layer 3. Fetches recent headlines, runs `analyze_headlines` from `news_analysis.py`, and returns the simplified shape needed by the UI:
+
+```python
+{
+    "sentiment":       "positive" | "neutral" | "negative",
+    "color":           "green"    | "yellow"  | "red",
+    "summary":         "...",        # short prose summary
+    "headline_count":  <int>,
+}
+```
+
+Cached in a process-level dict (`_NEWS_SENTIMENT_CACHE`) for `NEWS_CACHE_TTL_HOURS`. Critically, this function is called *outside* `calculate_downside_risk_score` — by design, sentiment never reaches the scoring path.
+
+**`_model1_predicted_return(ticker: str) -> float | None`**
+
+Calls `models.model_1.build_prediction` and extracts `predicted_return`. Caches the result in a process-level dict (`_MODEL_PRED_CACHE`) for `MODEL_PRED_TTL_HOURS` to avoid retraining XGBoost on every scan. Returns `None` on `PredictionError` or any exception, so the scoring layer can degrade gracefully (the `model_negative_return` signal simply does not fire).
+
+**`get_downside_risk_stocks(sector, industry, limit, min_market_cap, use_model=True, model_top_n=30) -> list[dict]`**
+
+Full scanner pipeline (7 stages):
+
+1. **Stage 1 — Parallel data fetch.** `ThreadPoolExecutor(max_workers=8)` runs `_fetch_ticker_data` across the filtered universe. Tickers with missing data are skipped silently.
+2. **Stage 2 — Technical-only ranking.** `calculate_downside_risk_score` runs without any model prediction set. The top `model_top_n` (default 30) candidates by technical score advance to Stage 3.
+3. **Stage 3 — Selective Model 1 pass.** Parallel `_model1_predicted_return` runs on the shortlist only — this is the slow step (~30–60 s on a cold cache for 30 tickers, near-instant when warm). Skipped entirely when `use_model=False`.
+4. **Stage 4 — Final scoring.** `calculate_downside_risk_score` runs again now that `predicted_return` is populated. `generate_downside_explanation` builds the "Why Flagged" list. `_risk_level` assigns Low / Medium / High.
+5. **Stage 5 — Layer 3 news sentiment.** Parallel `classify_news_sentiment` calls produce the green / yellow / red dot color and a short blurb. Failures fall back to `"neutral"` / `"yellow"`.
+6. **Stage 6 — Sort.** Final list sorted by `downside_score DESC`.
+7. **Stage 7 — Output shaping.** Returns a list of plain dicts matching the API contract: `ticker`, `company_name`, `predicted_return` (in percent), `downside_score`, `risk_level`, `news_sentiment`, `news_sentiment_color`, `news_summary`, `why_flagged`, plus a technical snapshot for the details overlay (`current_price`, `month_return`, `momentum_10d`, `volatility_annual`, `rsi`, `ma_50`, `ma_200`, `week52_high`, `week52_low`, `market_cap`, `sector`, `industry`).
+
+The two-stage design (technical-only filter → Model 1 on shortlist) is the key performance choice — see [§6.9](#69-two-stage-model-1-filter-in-the-downside-risk-scanner).
+
+---
+
 ### `services/news_analysis.py` — Sentiment Engine
 
 **Purpose:** Converts a list of raw headline strings into a structured sentiment report with score, label, theme flags, and a prose summary.
@@ -530,12 +674,12 @@ A temporary SQLite database is created per test session using pytest fixtures; `
 | `templates/index.html` | Dual model comparison form and result cards |
 | `templates/watchlist.html` | Watchlist table with run/run-all controls |
 | `templates/predictions.html` | History table, evaluate button, performance panel |
-| `templates/recommendations.html` | Filter sidebar, results table, detail overlay |
-| `static/style.css` | Shared styles |
+| `templates/recommendations.html` | Tabbed view: **Likely Gainers** (filter sidebar + results table) and **Likely Decliners** (filter sidebar + downside-card grid). Shared details overlay element for both tabs. |
+| `static/style.css` | Shared styles, including tab switcher, decliner cards, risk-level badges, and traffic-light news sentiment dot |
 | `static/script.js` | Parallel `fetch` to `/predict` for both models, fake progress bar animation |
 | `static/watchlist.js` | CRUD calls to watchlist API, run-all orchestration |
 | `static/predictions.js` | History load, filter, evaluate trigger, performance display |
-| `static/recommendations.js` | Screener filters, result rendering, news detail overlay, add-to-watchlist |
+| `static/recommendations.js` | Both tabs: gainers screener (filters, table render, news overlay, add-to-watchlist) and decliners scanner (filters, card grid render, downside details overlay with technical snapshot, sentiment dot, "Why Flagged" list, recent headlines, Add-to-Watchlist / Close actions) |
 
 `script.js` uses `Promise.all([fetch("/predict", m1_body), fetch("/predict", m2_body)])` to fire both model predictions simultaneously, cutting total wait time roughly in half compared to sequential requests.
 
@@ -737,3 +881,45 @@ if isinstance(df.columns, pd.MultiIndex):
 ```
 
 **Result:** Zero `KeyError` failures on column access across all yfinance version combinations tested. This is a correctness improvement that also removed the need for try/except column access fallbacks that were adding ~2 ms of overhead per model run.
+
+---
+
+### 6.9 Two-Stage Model 1 Filter in the Downside Risk Scanner
+
+**Problem:** The Likely Decliners scanner wants to use Model 1's predicted 30-day return as one of its signals — but Model 1 trains a fresh XGBoost regressor per ticker, taking **3–5 seconds** per call (download + feature build + train + predict). Running it across the full ~200-ticker universe would take 8–10 minutes wall-clock even with 8 parallel workers — unusable for an interactive UI.
+
+**Calculation (naive parallel baseline):**
+- 200 tickers × ~4 s average ÷ 8 workers = **~100 seconds** even with full parallelism, plus the existing fundamentals/news fetches on top.
+
+**Solution:** A **two-stage filter** in `get_downside_risk_stocks`:
+
+1. Compute all the cheap technical signals (moving averages, RSI, volatility, momentum, volume spike, 52-week range) for the **entire universe** in parallel — this is fast (~30 s cold, near-instant with cache).
+2. Rank by technical-only downside score, take the **top N candidates** (default `model_top_n = 30`), and run Model 1 only on this shortlist.
+3. Recompute the final score with `predicted_return` populated for the shortlist, then sort and slice to the user's requested `limit`.
+
+```python
+top_candidates = enriched[: max(model_top_n, limit * 2)]  # ~30 candidates
+with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
+    futures = {pool.submit(_model1_predicted_return, d["ticker"]): d
+               for d in top_candidates}
+    for future in as_completed(futures):
+        d = futures[future]
+        d["predicted_return"] = future.result()
+```
+
+Two complementary caches keep repeat scans fast:
+
+| Cache | TTL | Scope |
+|---|---|---|
+| `_MODEL_PRED_CACHE` (in-process dict) | 12 hours | Per-ticker Model 1 `predicted_return` value |
+| `_NEWS_SENTIMENT_CACHE` (in-process dict) | 4 hours | Per-ticker Layer 3 sentiment classification |
+
+A `use_model=False` query parameter (exposed in the UI as the **"Include Model 1 prediction"** checkbox) lets users skip the model pass entirely for a pure technical scan.
+
+**Result:**
+
+- **Cold scan with model on:** ~30 s technical pass + ~30 candidates × 4 s ÷ 8 workers ≈ **45 s total** (a **~3× reduction** vs. the naive ~100 s parallel-everything baseline, and **>10× faster** than running Model 1 sequentially on the full universe).
+- **Warm scan (within 12 hours):** **<2 seconds** — nearly all data comes from the in-process caches; only the final scoring pass runs.
+- **Technical-only mode:** ~30 s cold, sub-second warm.
+
+The 12-hour Model 1 TTL was chosen because Model 1's prediction depends on a fresh training run over historical price data; intraday price moves do not meaningfully change the 30-day forward forecast, so half-day caching gives a large speedup with negligible accuracy loss.

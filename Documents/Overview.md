@@ -40,7 +40,11 @@ The predictions page stores every saved forecast and evaluates it once the 30-da
 
 ---
 
-### 4. Stock Screener & Recommendations
+### 4. Stock Screener — Likely Gainers & Likely Decliners
+
+The recommendations page is split into two complementary tabs:
+
+#### Likely Gainers (rule-based "value + quality" screener)
 
 A rule-based screener that scores a curated universe of ~200+ large-cap US stocks on a 0–100 scale using:
 
@@ -49,17 +53,33 @@ A rule-based screener that scores a curated universe of ~200+ large-cap US stock
 
 Filters available: sector, industry, minimum market cap, profitable companies only. Results can be sorted by score, price, distance from high, or market cap.
 
+#### Likely Decliners (Downside Risk Scanner)
+
+A separate, mirror-image screener that scores stocks 0–100 on **downside risk** rather than upside potential. It runs a 3-layer pipeline:
+
+- **Layer 1 — Quantitative downside score (0–100):** technical and model signals only — negative predicted 30-day return (Model 1), negative 1-month return, weak 10-day momentum, price below the 50-day or 200-day moving average, elevated annualised volatility, RSI weakness or overbought reversal risk, price near the 52-week low, and volume spikes during a price decline.
+- **Layer 2 — Explanation layer:** every flagged stock includes beginner-friendly "Why Flagged" reasons (e.g. "Price is below the 50-day moving average", "Volatility is elevated").
+- **Layer 3 — News sentiment context:** recent headlines are classified as positive / neutral / negative and surfaced as a green / yellow / red dot beside the score. News is **display-only** — it never multiplies or distorts the quantitative downside score.
+
+Each result is mapped to a risk level: **Low (0–39), Medium (40–69), High (70–100)**. Wording is intentionally cautious throughout ("likely decliners", "downside risk", "stocks showing weakness") — this is a risk-analysis signal, not a guarantee.
+
+To keep scans fast, Model 1 is only retrained for the top technical-score candidates, and predictions are cached in-process. A "Include Model 1 prediction" checkbox lets users skip the slower model pass entirely for a fast technical-only scan.
+
 ---
 
 ### 5. News Sentiment Analysis
 
-Every stock in the screener is enriched with a news sentiment score derived from recent headlines:
+Recent yfinance headlines are converted into a structured sentiment report used in two places:
+
+- **Likely Gainers screener:** sentiment produces a bounded ±10 score adjustment on top of the base value score, plus theme flags (risk events, positive catalysts) shown in the detail overlay.
+- **Likely Decliners scanner:** sentiment is shown as a contextual green / yellow / red dot beside each card and as a short news blurb in the details overlay — but it is never used to adjust the downside score.
+
+Underlying mechanics (shared by both):
 
 - Headlines are pulled from Yahoo Finance via yfinance
 - Scored using a keyword-based positive/negative dictionary and recency decay weighting
 - Near-duplicate headlines are detected and removed to avoid double-counting
-- A final sentiment label (Bullish / Bearish / Neutral / Mixed) and score adjustment (±10 points) is applied to the screener score
-- Theme flags (risk events, positive catalysts) are extracted and surfaced in the detail overlay
+- A final sentiment label (Positive / Negative / Neutral) is produced
 
 ---
 
@@ -94,7 +114,7 @@ All market data is retrieved from **Yahoo Finance** through the `yfinance` libra
 | `/` | Side-by-side Model 1 vs Model 2 prediction comparison |
 | `/watchlist` | Manage tracked tickers, run predictions |
 | `/predictions` | View prediction history, trigger evaluation |
-| `/recommendations` | Browse screener results, filter, read news detail |
+| `/recommendations` | Tabbed screener: Likely Gainers (value + quality) and Likely Decliners (downside risk) |
 
 ---
 

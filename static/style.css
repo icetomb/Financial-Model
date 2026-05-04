@@ -1452,3 +1452,282 @@ button:disabled {
         grid-template-columns: 1fr;
     }
 }
+
+/* ==========================================================================
+   Recommendations tabs (Gainers / Decliners)
+   ========================================================================== */
+
+.rec-tabs {
+    display: flex;
+    gap: 4px;
+    margin-top: 22px;
+    padding: 4px;
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    background: var(--panel-bg);
+    width: fit-content;
+}
+
+.rec-tab {
+    padding: 9px 18px;
+    border: 0;
+    border-radius: 10px;
+    font: inherit;
+    font-size: 0.92rem;
+    font-weight: 700;
+    color: var(--muted);
+    background: transparent;
+    cursor: pointer;
+    transition: background 0.15s ease, color 0.15s ease;
+}
+
+.rec-tab:hover {
+    color: var(--text);
+    background: rgba(35, 104, 196, 0.06);
+}
+
+.rec-tab.active {
+    color: #ffffff;
+    background: linear-gradient(135deg, var(--accent), var(--accent-dark));
+}
+
+.rec-pane {
+    margin-top: 4px;
+}
+
+/* ==========================================================================
+   Likely Decliners – card grid + risk badges
+   ========================================================================== */
+
+.dec-cards {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(310px, 1fr));
+    gap: 14px;
+    margin-top: 6px;
+}
+
+.dec-card {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 16px 18px;
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    background: #ffffff;
+    transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.dec-card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 10px 26px rgba(23, 48, 79, 0.08);
+}
+
+.dec-card-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.dec-card-rank {
+    flex: none;
+    min-width: 34px;
+    padding: 4px 8px;
+    border-radius: 8px;
+    background: var(--panel-bg);
+    color: var(--muted);
+    font-weight: 700;
+    font-size: 0.82rem;
+    text-align: center;
+}
+
+.dec-card-title {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    line-height: 1.2;
+    overflow: hidden;
+}
+
+.dec-ticker {
+    font-size: 1.1rem;
+    color: var(--text);
+}
+
+.dec-company {
+    font-size: 0.82rem;
+    color: var(--muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.dec-card-stats {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 8px;
+    padding: 10px;
+    border-radius: 12px;
+    background: var(--panel-bg);
+    border: 1px solid var(--border);
+}
+
+.dec-stat {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 4px;
+    min-width: 0;
+}
+
+.dec-stat .box-label {
+    margin-bottom: 0;
+    font-size: 0.72rem;
+}
+
+.dec-stat strong {
+    font-size: 0.9rem;
+}
+
+.dec-card-reasons {
+    font-size: 0.86rem;
+    color: var(--text);
+}
+
+.dec-card-reasons .box-label {
+    margin-bottom: 4px;
+}
+
+.dec-card-reasons ul {
+    margin: 0;
+    padding-left: 18px;
+    line-height: 1.5;
+}
+
+.dec-card-reasons li {
+    padding: 1px 0;
+}
+
+.dec-card-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: auto;
+}
+
+/* Inline secondary button (smaller version of btn-secondary) */
+.btn-secondary-small {
+    padding: 6px 12px;
+    border: 1.5px solid var(--accent);
+    border-radius: 8px;
+    font-size: 0.82rem;
+    font-weight: 700;
+    color: var(--accent);
+    background: transparent;
+    cursor: pointer;
+    transition: background 0.15s ease, color 0.15s ease;
+}
+
+.btn-secondary-small:hover:not(:disabled) {
+    background: var(--accent);
+    color: #ffffff;
+}
+
+.btn-secondary-small:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+/* ==========================================================================
+   Risk-level badges (Low / Medium / High)
+   ========================================================================== */
+
+.risk-level-badge {
+    display: inline-block;
+    padding: 4px 10px;
+    border-radius: 999px;
+    font-size: 0.82rem;
+    font-weight: 700;
+    white-space: nowrap;
+}
+
+.risk-level-low {
+    background: #e8f7f1;
+    color: var(--positive);
+}
+
+.risk-level-medium {
+    background: #fff7df;
+    color: var(--neutral);
+}
+
+.risk-level-high {
+    background: #fff0f0;
+    color: var(--negative);
+}
+
+/* ==========================================================================
+   News sentiment indicator dot (green / yellow / red)
+   ========================================================================== */
+
+.sentiment-dot {
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    flex: none;
+    box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.7) inset;
+    cursor: help;
+}
+
+.sentiment-dot-green {
+    background: #1ea76d;
+    box-shadow: 0 0 0 1px rgba(21, 129, 95, 0.55);
+}
+
+.sentiment-dot-yellow {
+    background: #e9c451;
+    box-shadow: 0 0 0 1px rgba(140, 108, 31, 0.55);
+}
+
+.sentiment-dot-red {
+    background: #d75555;
+    box-shadow: 0 0 0 1px rgba(193, 70, 70, 0.55);
+}
+
+/* ==========================================================================
+   Decliner overlay extras
+   ========================================================================== */
+
+.dec-summary-row {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 18px;
+    align-items: start;
+    padding: 14px;
+    margin-top: 8px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: var(--panel-bg);
+}
+
+.dec-summary-row > div {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.dec-news-blurb p {
+    margin: 0;
+    font-size: 0.9rem;
+    color: var(--text);
+    line-height: 1.5;
+}
+
+@media (max-width: 640px) {
+    .dec-summary-row {
+        grid-template-columns: 1fr;
+    }
+
+    .dec-card-stats {
+        grid-template-columns: 1fr 1fr;
+    }
+}

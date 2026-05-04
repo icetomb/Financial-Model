@@ -528,6 +528,432 @@ async function loadModels() {
     }
 }
 
+// ===========================================================================
+// LIKELY DECLINERS TAB  – downside risk scanner
+// ===========================================================================
+
+const decTabs = document.querySelectorAll(".rec-tab");
+const gainersPane = document.getElementById("rec-pane-gainers");
+const declinersPane = document.getElementById("rec-pane-decliners");
+
+const decForm     = document.getElementById("dec-filters");
+const decSubmit   = document.getElementById("dec-submit");
+const decSector   = document.getElementById("dec-sector");
+const decIndustry = document.getElementById("dec-industry");
+const decMinCap   = document.getElementById("dec-min-cap");
+const decLimit    = document.getElementById("dec-limit");
+const decUseModel = document.getElementById("dec-use-model");
+
+const decLoading  = document.getElementById("dec-loading");
+const decResults  = document.getElementById("dec-results");
+const decCards    = document.getElementById("dec-cards");
+const decEmpty    = document.getElementById("dec-empty");
+const decTitle    = document.getElementById("dec-results-title");
+const decCount    = document.getElementById("dec-results-count");
+const decMessage  = document.getElementById("dec-message");
+const decError    = document.getElementById("dec-error");
+
+// -------- Tab switching --------
+
+decTabs.forEach((tab) => {
+    tab.addEventListener("click", () => {
+        decTabs.forEach((t) => {
+            t.classList.remove("active");
+            t.setAttribute("aria-selected", "false");
+        });
+        tab.classList.add("active");
+        tab.setAttribute("aria-selected", "true");
+
+        const target = tab.dataset.tab;
+        if (target === "gainers") {
+            gainersPane.classList.remove("hidden");
+            declinersPane.classList.add("hidden");
+        } else {
+            gainersPane.classList.add("hidden");
+            declinersPane.classList.remove("hidden");
+        }
+    });
+});
+
+// -------- Industry dropdown for decliners (mirrors gainers) --------
+
+decSector.addEventListener("change", async () => {
+    const sector = decSector.value;
+    decIndustry.innerHTML = '<option value="">All Industries</option>';
+    if (!sector) return;
+    try {
+        const res = await fetch(`/api/industries?sector=${encodeURIComponent(sector)}`);
+        const industries = await res.json();
+        industries.forEach((ind) => {
+            const opt = document.createElement("option");
+            opt.value = ind;
+            opt.textContent = ind;
+            decIndustry.appendChild(opt);
+        });
+    } catch {
+        // fall back silently
+    }
+});
+
+// -------- Helpers (decliner-specific) --------
+
+function showDecMessage(text) {
+    decMessage.textContent = text;
+    decMessage.classList.remove("hidden");
+    setTimeout(() => decMessage.classList.add("hidden"), 4000);
+}
+
+function showDecError(text) {
+    decError.textContent = text;
+    decError.classList.remove("hidden");
+    setTimeout(() => decError.classList.add("hidden"), 6000);
+}
+
+function riskLevelClass(level) {
+    if (level === "High")   return "risk-level-high";
+    if (level === "Medium") return "risk-level-medium";
+    return "risk-level-low";
+}
+
+function downsideScoreClass(score) {
+    if (score >= 70) return "rec-score-low";   // red badge for high downside
+    if (score >= 40) return "rec-score-mid";   // yellow badge for medium
+    return "rec-score-high";                   // green badge for low downside (inverted intent)
+}
+
+function sentimentDotClass(color) {
+    if (color === "green")  return "sentiment-dot-green";
+    if (color === "red")    return "sentiment-dot-red";
+    return "sentiment-dot-yellow";
+}
+
+function sentimentLabelTitle(sentiment) {
+    if (!sentiment) return "Recent news sentiment";
+    return `Recent news sentiment: ${sentiment}`;
+}
+
+// -------- Fetch decliners --------
+
+decForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    await fetchDecliners();
+});
+
+async function fetchDecliners() {
+    const params = new URLSearchParams();
+    if (decSector.value)   params.set("sector", decSector.value);
+    if (decIndustry.value) params.set("industry", decIndustry.value);
+    params.set("limit", decLimit.value);
+    params.set("min_market_cap", decMinCap.value);
+    params.set("use_model", decUseModel.checked ? "1" : "0");
+
+    decSubmit.disabled = true;
+    decSubmit.textContent = "Scanning\u2026";
+    decLoading.classList.remove("hidden");
+    decResults.classList.add("hidden");
+
+    try {
+        const res = await fetch(`/api/downside-risk?${params}`);
+        const data = await res.json();
+
+        if (!res.ok) {
+            showDecError(data.error || "Failed to scan for downside risk.");
+            return;
+        }
+
+        renderDecliners(data);
+    } catch {
+        showDecError("Something went wrong. Please try again.");
+    } finally {
+        decLoading.classList.add("hidden");
+        decSubmit.disabled = false;
+        decSubmit.textContent = "Find Likely Decliners";
+    }
+}
+
+// -------- Render decliner cards --------
+
+function renderDecliners(results) {
+    decResults.classList.remove("hidden");
+    decCards.innerHTML = "";
+
+    if (results.length === 0) {
+        decEmpty.classList.remove("hidden");
+        decCount.textContent = "";
+        decTitle.textContent = "Likely Decliners";
+        return;
+    }
+
+    decEmpty.classList.add("hidden");
+    const label = decSector.value || "All Sectors";
+    decTitle.textContent = `Likely Decliners — ${label}`;
+    decCount.textContent = `${results.length} stock${results.length !== 1 ? "s" : ""}`;
+
+    results.forEach((stock, idx) => {
+        const card = document.createElement("article");
+        card.className = "dec-card";
+        card.dataset.stock = JSON.stringify(stock);
+
+        const reasonsList = (stock.why_flagged || [])
+            .slice(0, 3)
+            .map((r) => `<li>${r}</li>`)
+            .join("");
+
+        const moreReasons = (stock.why_flagged || []).length - 3;
+
+        // Predicted return (already in percent from backend)
+        const predReturn = stock.predicted_return;
+        const predDisplay = predReturn != null
+            ? `<span class="${predReturn < 0 ? "value-negative" : "value-positive"}">${predReturn > 0 ? "+" : ""}${predReturn.toFixed(2)}%</span>`
+            : '<span class="value-muted">—</span>';
+
+        card.innerHTML = `
+            <div class="dec-card-header">
+                <div class="dec-card-rank">#${idx + 1}</div>
+                <div class="dec-card-title">
+                    <strong class="dec-ticker">${stock.ticker}</strong>
+                    <span class="dec-company">${stock.company_name || ""}</span>
+                </div>
+                <span class="sentiment-dot ${sentimentDotClass(stock.news_sentiment_color)}"
+                      title="${sentimentLabelTitle(stock.news_sentiment)}"
+                      aria-label="${sentimentLabelTitle(stock.news_sentiment)}"></span>
+            </div>
+
+            <div class="dec-card-stats">
+                <div class="dec-stat">
+                    <span class="box-label">Downside Score</span>
+                    <strong class="rec-score-badge ${downsideScoreClass(stock.downside_score)}">
+                        ${stock.downside_score}/100
+                    </strong>
+                </div>
+                <div class="dec-stat">
+                    <span class="box-label">Risk Level</span>
+                    <strong class="risk-level-badge ${riskLevelClass(stock.risk_level)}">
+                        ${stock.risk_level}
+                    </strong>
+                </div>
+                <div class="dec-stat">
+                    <span class="box-label">Predicted 30-Day Return</span>
+                    <strong>${predDisplay}</strong>
+                </div>
+            </div>
+
+            <div class="dec-card-reasons">
+                <span class="box-label">Why Flagged</span>
+                <ul>${reasonsList}</ul>
+                ${moreReasons > 0 ? `<span class="hint">+${moreReasons} more reason${moreReasons > 1 ? "s" : ""}</span>` : ""}
+            </div>
+
+            <div class="dec-card-actions">
+                <button class="btn-small btn-primary" data-action="dec-details" data-idx="${idx}">
+                    Details
+                </button>
+                <button class="btn-small btn-secondary-small" data-action="dec-add-watchlist" data-ticker="${stock.ticker}">
+                    + Watchlist
+                </button>
+            </div>
+        `;
+        decCards.appendChild(card);
+    });
+}
+
+// -------- Card action delegation --------
+
+decCards.addEventListener("click", (e) => {
+    const btn = e.target.closest("button");
+    if (!btn) return;
+
+    const action = btn.dataset.action;
+    if (action === "dec-add-watchlist") {
+        addDecToWatchlist(btn.dataset.ticker, btn);
+    } else if (action === "dec-details") {
+        const card = btn.closest(".dec-card");
+        const stock = JSON.parse(card.dataset.stock);
+        showDeclinerDetails(stock);
+    }
+});
+
+// -------- Add decliner to watchlist (separate UX from gainers) --------
+
+async function addDecToWatchlist(ticker, btn) {
+    btn.disabled = true;
+    btn.textContent = "Adding\u2026";
+    try {
+        const res = await fetch("/api/watchlist", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ ticker }),
+        });
+        const data = await res.json();
+        if (res.status === 409) {
+            btn.textContent = "Already Added";
+            btn.disabled = true;
+            return;
+        }
+        if (!res.ok) {
+            showDecError(data.error || "Failed to add to watchlist.");
+            btn.disabled = false;
+            btn.textContent = "+ Watchlist";
+            return;
+        }
+        btn.textContent = "Added \u2713";
+        btn.disabled = true;
+        showDecMessage(`${ticker} added to your watchlist.`);
+    } catch {
+        showDecError("Failed to add to watchlist.");
+        btn.disabled = false;
+        btn.textContent = "+ Watchlist";
+    }
+}
+
+// -------- Decliner details overlay --------
+
+function showDeclinerDetails(stock) {
+    recOverlayTitle.textContent = `${stock.ticker} — ${stock.company_name || "Downside Risk Details"}`;
+
+    const predReturn = stock.predicted_return;
+    const predDisplay = predReturn != null
+        ? `<strong class="${predReturn < 0 ? "value-negative" : "value-positive"}">${predReturn > 0 ? "+" : ""}${predReturn.toFixed(2)}%</strong>`
+        : '<strong class="value-muted">N/A</strong>';
+
+    const reasonsList = (stock.why_flagged || [])
+        .map((r) => `<li>${r}</li>`)
+        .join("");
+
+    // Format technical metrics for the overlay
+    const tech = `
+        <div class="results-grid" style="grid-template-columns: repeat(3, 1fr);">
+            <article class="result-box">
+                <span class="box-label">Current Price</span>
+                <strong>${formatCurrency(stock.current_price)}</strong>
+            </article>
+            <article class="result-box">
+                <span class="box-label">52-Week High</span>
+                <strong>${formatCurrency(stock.week52_high)}</strong>
+            </article>
+            <article class="result-box">
+                <span class="box-label">52-Week Low</span>
+                <strong>${formatCurrency(stock.week52_low)}</strong>
+            </article>
+            <article class="result-box">
+                <span class="box-label">1-Month Return</span>
+                <strong class="${toneClass(stock.month_return)}">${formatPercent(stock.month_return)}</strong>
+            </article>
+            <article class="result-box">
+                <span class="box-label">10-Day Momentum</span>
+                <strong class="${toneClass(stock.momentum_10d)}">${formatPercent(stock.momentum_10d)}</strong>
+            </article>
+            <article class="result-box">
+                <span class="box-label">Annualised Volatility</span>
+                <strong>${stock.volatility_annual != null ? (stock.volatility_annual * 100).toFixed(1) + "%" : "—"}</strong>
+            </article>
+            <article class="result-box">
+                <span class="box-label">RSI (14)</span>
+                <strong>${stock.rsi != null ? stock.rsi.toFixed(1) : "—"}</strong>
+            </article>
+            <article class="result-box">
+                <span class="box-label">50-Day MA</span>
+                <strong>${formatCurrency(stock.ma_50)}</strong>
+            </article>
+            <article class="result-box">
+                <span class="box-label">200-Day MA</span>
+                <strong>${formatCurrency(stock.ma_200)}</strong>
+            </article>
+        </div>
+    `;
+
+    recOverlayBody.innerHTML = `
+        <div style="display:flex; align-items:center; gap:10px; margin-bottom:16px; flex-wrap:wrap;">
+            <span class="rec-score-badge ${downsideScoreClass(stock.downside_score)}" style="font-size:1.05rem; padding:8px 14px;">
+                Downside Score: ${stock.downside_score}/100
+            </span>
+            <span class="risk-level-badge ${riskLevelClass(stock.risk_level)}" style="font-size:0.95rem;">
+                ${stock.risk_level} Risk
+            </span>
+            <span class="sentiment-badge sentiment-badge-${stock.news_sentiment}">
+                <span class="sentiment-dot ${sentimentDotClass(stock.news_sentiment_color)}" aria-hidden="true"></span>
+                ${stock.news_sentiment ? stock.news_sentiment.charAt(0).toUpperCase() + stock.news_sentiment.slice(1) : "Neutral"} news
+            </span>
+            <span class="hint">${stock.sector || ""}${stock.industry ? " · " + stock.industry : ""}</span>
+        </div>
+
+        <div class="dec-summary-row">
+            <div>
+                <span class="box-label">Predicted 30-Day Return</span>
+                ${predDisplay}
+            </div>
+            ${stock.news_summary ? `<div class="dec-news-blurb"><span class="box-label">News context</span><p>${stock.news_summary}</p></div>` : ""}
+        </div>
+
+        <h4 style="margin: 20px 0 8px;">Why Flagged</h4>
+        <ul class="rec-reasons-list">${reasonsList}</ul>
+
+        <h4 style="margin: 20px 0 8px;">Technical Snapshot</h4>
+        ${tech}
+
+        <h4 style="margin: 20px 0 8px;">Recent Headlines</h4>
+        <div id="dec-detail-news" class="rec-news-section">
+            <p class="hint">Loading headlines\u2026</p>
+        </div>
+
+        <p class="hint" style="margin-top:18px;">
+            This is a risk-analysis signal, not a guarantee. Stocks flagged as
+            "likely decliners" may still rise; use these reasons as starting
+            points for your own research.
+        </p>
+
+        <div style="display:flex; align-items:center; gap:8px; margin-top:18px; flex-wrap:wrap;">
+            <button id="dec-detail-add-watchlist" class="btn-small btn-primary" data-ticker="${stock.ticker}">
+                + Add to Watchlist
+            </button>
+            <button id="dec-detail-close" class="btn-small btn-secondary-small">
+                Close
+            </button>
+        </div>
+    `;
+
+    recOverlay.classList.remove("hidden");
+
+    document.getElementById("dec-detail-add-watchlist").addEventListener("click", (e) => {
+        addDecToWatchlist(e.target.dataset.ticker, e.target);
+    });
+    document.getElementById("dec-detail-close").addEventListener("click", () => {
+        recOverlay.classList.add("hidden");
+    });
+
+    loadDeclinerNews(stock.ticker);
+}
+
+// -------- Fetch and render decliner-specific news --------
+
+async function loadDeclinerNews(ticker) {
+    const container = document.getElementById("dec-detail-news");
+    if (!container) return;
+    try {
+        const res = await fetch(`/api/downside-risk/news/${encodeURIComponent(ticker)}`);
+        const articles = await res.json();
+
+        if (!articles || articles.length === 0) {
+            container.innerHTML = '<p class="hint">No recent news found for this ticker.</p>';
+            return;
+        }
+
+        container.innerHTML = articles.map((a) => {
+            const publisher = a.publisher ? `<span class="rec-news-source">${a.publisher}</span>` : "";
+            const time = a.relative_time || "";
+            const link = a.link
+                ? `<a href="${a.link}" target="_blank" rel="noopener">${a.title || "Untitled"}</a>`
+                : (a.title || "Untitled");
+            return `<div class="rec-news-item">
+                <div class="rec-news-title">${link}</div>
+                <div class="rec-news-meta">${publisher}${time ? ` · ${time}` : ""}</div>
+            </div>`;
+        }).join("");
+    } catch {
+        container.innerHTML = '<p class="hint">Failed to load news.</p>';
+    }
+}
+
 // -------- Init --------
 
 loadModels();
