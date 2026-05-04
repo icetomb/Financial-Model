@@ -14,7 +14,80 @@ The project lives at `/var/www/Financial-Model` on the server.
 
 ---
 
-## 2. Initial Server Setup
+## 2. Connecting to the Server (SSH Access)
+
+All server management is done over SSH from your Windows machine using PowerShell.
+
+### 1. Direct SSH Command
+
+Connect to the droplet using your private key:
+
+```powershell
+ssh -i $env:USERPROFILE\.ssh\id_ed25519_personal root@YOUR_SERVER_IP
+```
+
+- `id_ed25519_personal` is the **private key** file (not the `.pub` file)
+- `YOUR_SERVER_IP` is the **Public IPv4** address shown in your DigitalOcean dashboard
+- This command must be run from **PowerShell**
+
+Example:
+
+```powershell
+ssh -i $env:USERPROFILE\.ssh\id_ed25519_personal root@134.122.50.10
+```
+
+On your very first connection you will see a message like:
+
+```
+The authenticity of host '134.122.50.10' can't be established.
+Are you sure you want to continue connecting (yes/no)?
+```
+
+Type `yes` and press Enter. This only happens once.
+
+---
+
+### 2. Simplifying SSH with a Config File (Recommended)
+
+To avoid typing the full command every time, add an alias to your SSH config file.
+
+Open the config file in Notepad:
+
+```powershell
+notepad $env:USERPROFILE\.ssh\config
+```
+
+Add the following block (replace `YOUR_SERVER_IP`):
+
+```
+Host stock-server
+    HostName YOUR_SERVER_IP
+    User root
+    IdentityFile ~/.ssh/id_ed25519_personal
+```
+
+Save the file. You can now connect with just:
+
+```powershell
+ssh stock-server
+```
+
+---
+
+### 3. Troubleshooting SSH
+
+**`Permission denied (publickey)`**
+The wrong key is being used or the path to the key is incorrect. Double-check the filename and that you are pointing to the private key, not the `.pub` file.
+
+**`Identity file ... not accessible`**
+The key filename is wrong. Verify the exact filename in `$env:USERPROFILE\.ssh\` by running `ls $env:USERPROFILE\.ssh\` in PowerShell.
+
+**First-time connection prompt about host authenticity**
+This is normal. Type `yes` to trust the server and add it to your known hosts.
+
+---
+
+## 3. Initial Server Setup
 
 SSH into the droplet, then update the system and install dependencies:
 
@@ -25,7 +98,7 @@ apt install python3-pip python3-venv git nginx -y
 
 ---
 
-## 3. Cloning the Repo
+## 4. Cloning the Repo
 
 ```bash
 cd /var/www
@@ -37,7 +110,7 @@ The `-b main` flag ensures the production server always clones the `main` branch
 
 ---
 
-## 4. Python Virtual Environment
+## 5. Python Virtual Environment
 
 Create and activate an isolated virtual environment, then install all dependencies:
 
@@ -51,7 +124,7 @@ pip install gunicorn
 
 ---
 
-## 5. Testing Flask Manually
+## 6. Testing Flask Manually
 
 Before wiring up Gunicorn and Nginx, you can verify the app runs correctly by starting Flask directly:
 
@@ -63,7 +136,7 @@ Then visit `http://YOUR_SERVER_IP:5000` in a browser. This is **only for testing
 
 ---
 
-## 6. Testing Gunicorn Manually
+## 7. Testing Gunicorn Manually
 
 Once Flask works, test Gunicorn directly before setting up systemd:
 
@@ -75,7 +148,7 @@ gunicorn --bind 127.0.0.1:8000 app:app
 
 ---
 
-## 7. Nginx Configuration
+## 8. Nginx Configuration
 
 Create the Nginx config for this app:
 
@@ -114,7 +187,7 @@ systemctl restart nginx
 
 ---
 
-## 8. systemd Service
+## 9. systemd Service
 
 Create a systemd service so Gunicorn starts automatically and restarts on failure:
 
@@ -152,7 +225,7 @@ systemctl status stockapp
 
 ---
 
-## 9. Updating the Deployed App After New Commits
+## 10. Updating the Deployed App After New Commits
 
 This is the standard workflow every time you push new changes to `main` and want them live on the server.
 
@@ -177,7 +250,7 @@ Then refresh the website to confirm the update is live.
 
 ---
 
-## 10. Useful Commands
+## 11. Useful Commands
 
 | Task | Command |
 |---|---|
@@ -190,7 +263,7 @@ Then refresh the website to confirm the update is live.
 
 ---
 
-## 11. Troubleshooting
+## 12. Troubleshooting
 
 **Visiting `http://SERVER_IP` shows the default "Welcome to nginx!" page**
 The default Nginx site is still enabled, or the `stockapp` config was not linked correctly. Make sure you ran `rm /etc/nginx/sites-enabled/default` and created the symlink in `/etc/nginx/sites-enabled/`.
