@@ -16,6 +16,8 @@ This document is the running log of notable performance problems, bugs, and arch
    - [1.9 Two-Stage Model 1 Filter](#19-two-stage-model-1-filter-in-the-downside-risk-scanner)
 2. [Database & Migration Bugs](#2-database--migration-bugs)
    - [2.1 Legacy `predictions` Table Missing Batch Columns](#21-legacy-predictions-table-missing-batch-columns)
+3. [External Data Source Resilience](#3-external-data-source-resilience)
+   - [3.1 yfinance 401 Unauthorized Errors During Monthly Backtest](#31-yfinance-401-unauthorized-errors-during-monthly-backtest)
 
 ---
 
@@ -316,3 +318,117 @@ Any future code that reorders these stages or adds a new `batch_id`-dependent in
 - `CREATE TABLE IF NOT EXISTS` cannot retro-fit columns. New columns on an existing table always require an explicit `ALTER TABLE`.
 - Anything that *references* a new column (indexes, queries, triggers) must run **after** the migration that creates the column.
 - Always have at least one test that simulates "the deployed database is a version behind the code", because the default test fixture pattern (fresh `tmp_path` DB) hides this entire class of bug.
+
+---
+
+## 3. External Data Source Resilience
+
+This section captures bugs and design decisions related to upstream data sources that we do not control — primarily Yahoo Finance via `yfinance`. The pattern across these is "the upstream API works most of the time but fails just often enough to break a long batch run if we don't plan for it".
+
+---
+
+### 3.1 yfinance 401 Unauthorized Errors During Monthly Backtest
+
+**Symptom (encountered 2026-05-06):** Running `scripts/run_monthly_backtest.py` in production produced repeated failures of the form
+
+```
+HTTP Error 401: {"finance":{"result":null,"error":{"code":"Unauthorized","description":"User is unable to access this feature"}}}
+```
+
+against `yf.Ticker(ticker).info` calls for individual tickers in the screener universe. A single 401 inside `services.recommendations._fetch_stock_data` made that ticker silently disappear from the recommendation list; a 401 inside one of the model's `yf.download` calls killed the entire `(ticker, model)` pair with a `PredictionError("Could not download stock data right now…")` and reported it as a model failure.
+
+**Why it happened:** Yahoo's public endpoints rotate session cookies and CSRF crumbs aggressively. Their `401 Unauthorized` responses in this code path are *not* a real auth problem — they're a transient side effect of the cookie/crumb rotation, and the same call typically succeeds when retried a few seconds later. The same failure mode occurs with `429 Too Many Requests` (rate limiting), connection resets, and intermittent `5xx` responses; the project happened to hit `401` first because Yahoo throttled their cookie endpoint that day.
+
+The original cron flow had **no retries and no error classification**:
+
+- One `yfinance` blip → one ticker dropped or one prediction lost.
+- A "data fetch failed" outcome was indistinguishable from a "model raised PredictionError" outcome — both showed up in `errors`.
+- The same SPY/VIX data was downloaded 50 times per Model 2 run, multiplying the chance of being throttled.
+- The recommendations engine had a stale fundamentals cache row but threw it away on a live-fetch failure.
+
+**Fix:** A small, layered resilience strategy.
+
+#### Layer 1 — `services/yf_resilience.py`
+
+A new helper module provides two functions: `is_transient_error(exc)` and `with_retries(fn, *args, attempts=3, base_delay=1.5, ...)`. The classifier walks `__cause__` and `__context__` so a `PredictionError` chained from a 401 is still detected as transient. `with_retries` retries with exponential backoff (1.5 s, 3 s by default) and re-raises the last exception once `attempts` is exhausted; **non-transient errors short-circuit immediately** so a model's "not enough history" `PredictionError` is not retried 3 expensive times.
+
+```python
+result = with_retries(
+    run_model,
+    model_name,
+    ticker,
+    attempts=3,
+    base_delay=1.5,
+    logger=log,
+    label=f"{ticker}/{model_name}",
+)
+```
+
+#### Layer 2 — Failure classification in `scripts/run_monthly_backtest.py`
+
+After retries are exhausted, the cron script asks `is_transient_error(exc)` whether the exception was data-side or model-side and bumps a separate counter for each:
+
+| Outcome | Trigger | Recorded in |
+|---|---|---|
+| `data_failure` | `is_transient_error(exc) is True` after retries | `data_failures`, ticker added to `failed_tickers` |
+| `model_failure` | Anything else (genuine `PredictionError`, missing columns, DB write failure, …) | `model_failures` |
+
+The summary now has both buckets plus a sorted `failed_tickers` list, and the JSON shape is documented in `Documents/Technical-Reference.md` § 6.
+
+#### Layer 3 — In-process download caches
+
+Two tiny module-level caches (5-minute TTL, 8-entry FIFO eviction) eliminate redundant downloads:
+
+| Cache | File | Hot path it serves |
+|---|---|---|
+| `models.model_1._DOWNLOAD_CACHE` | `models/model_1.py` | A ticker's price history fetched by Model 1 is reused when Model 2 runs against the same ticker seconds later. |
+| `models.model_2._CLOSE_CACHE`    | `models/model_2.py` | SPY (`SPY`) and VIX (`^VIX`) are downloaded once per cron run instead of once per ticker. For a 50-ticker run that's ~99 fewer downloads. |
+
+Both caches are thread-safe and expose `_clear_*_cache()` test hooks. They use `df.copy()` on insert and retrieval so cached frames cannot be mutated by callers.
+
+#### Layer 4 — Stale-cache fallback in the recommendations engine
+
+`services.recommendations._fetch_stock_data` now keeps the original (expired) `fundamentals_cache` row in scope while attempting the live `yf.Ticker(ticker).info` refresh. If the live call raises, the function returns the stale row with an info-level log line instead of returning `None`. This keeps the screener (and therefore the cron's top-50 list) usable even during a Yahoo outage.
+
+```python
+try:
+    tk = yf.Ticker(ticker)
+    info = tk.info or {}
+except Exception:
+    logger.warning("yfinance .info failed for %s", ticker)
+    if cached:
+        logger.info("Falling back to stale fundamentals cache for %s", ticker)
+        return cached
+    return None
+```
+
+#### Layer 5 — Inter-ticker pause
+
+The cron loop sleeps `SLEEP_BETWEEN_TICKERS_SECONDS` (default 1.0 s) between *tickers* to lower the steady-state request rate against Yahoo's endpoints. The pause runs only between tickers — models for the same ticker stay back-to-back so the model_1 download cache is hot when Model 2 runs.
+
+**Outcome:**
+
+- A 401 (or 429, or transient 5xx) on a single yfinance call no longer kills the (ticker, model) pair — it triggers up to 2 retries, and only after all attempts fail is the pair counted as a *data failure* (not a *model failure*).
+- The recommendations stage no longer silently drops tickers when Yahoo flakes — stale cache rows keep them visible.
+- A 50-ticker Model 2 run downloads SPY and ^VIX once instead of 50 times each.
+- Per-ticker price history is downloaded once per run instead of once per (ticker × model) pair.
+- The summary clearly distinguishes "Yahoo had a bad day" (`data_failure_count`, `failed_tickers`) from "the model genuinely couldn't predict this ticker" (`model_failure_count`).
+
+**Regression tests:** `tests/test_backtests.py` adds 17 new tests across five classes:
+
+| Class | Coverage |
+|---|---|
+| `TestIsTransientError` | All matched HTTP codes, message keywords, and exception types; cause-chain walk; rejection of genuine model errors |
+| `TestWithRetries` | Success on first attempt; recovery after transient failures; exhaustion behaviour; **non-transient errors are not retried** |
+| `TestRetryAndResilience` | Cron retries transient errors and saves on recovery; classifies them as `data_failure` after exhaustion; classifies non-transient errors as `model_failure` and never retries; one bad ticker does not break the rest of the batch and shows up exactly once in `failed_tickers` |
+| `TestDownloadCacheReuse` | The second `download_data(ticker, ...)` call within the TTL window skips `yf.download` entirely |
+| `TestStaleFundamentalsFallback` | `_fetch_stock_data` returns the expired cache row when `yf.Ticker(...).info` raises |
+
+A `_no_sleeps` autouse fixture monkeypatches `time.sleep` so retry backoff and the inter-ticker pause do not stretch the test suite.
+
+**Lessons / takeaways:**
+
+- Treat every yfinance HTTP code as **potentially transient**; the upstream API is best-effort and our code path runs unattended.
+- Always classify "couldn't fetch data" separately from "model failed". Conflating them makes it impossible to distinguish a Yahoo outage from a model regression in the daily/monthly logs.
+- When iterating the cartesian product of tickers × models, look hard for redundant downloads. The simplest win is often a 5-minute in-process cache, not a clever architectural refactor.
+- Stale data is usually better than no data for a screener whose output drives a downstream process — the user can see "this row is from yesterday" but cannot recover from "this ticker just disappeared".

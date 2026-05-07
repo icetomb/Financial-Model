@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import re
+import threading
+import time
 import warnings
 from datetime import date, timedelta
 
@@ -60,9 +62,58 @@ def normalize_ticker(ticker: str) -> str:
     return cleaned
 
 
+# ---------------------------------------------------------------------------
+# Tiny in-process price-history cache.
+#
+# Both Model 1 and Model 2 invoke `download_data(ticker, start, end)` for
+# the same ticker during the same prediction request (e.g. the home page
+# fires both in parallel) and during the monthly backtest cron (which
+# runs every model for every ticker back-to-back).  Caching the resulting
+# DataFrame for a few minutes lets the second call skip the network
+# entirely without changing any function signatures.
+#
+# This is intentionally tiny: short TTL, small max size, FIFO eviction.
+# ---------------------------------------------------------------------------
+_DOWNLOAD_CACHE_TTL_SECONDS = 300
+_DOWNLOAD_CACHE_MAX_ENTRIES = 8
+_DOWNLOAD_CACHE: dict[tuple[str, str, str], tuple[float, pd.DataFrame]] = {}
+_DOWNLOAD_CACHE_LOCK = threading.Lock()
+
+
+def _cache_get(key: tuple[str, str, str]) -> pd.DataFrame | None:
+    with _DOWNLOAD_CACHE_LOCK:
+        entry = _DOWNLOAD_CACHE.get(key)
+        if entry is None:
+            return None
+        timestamp, df = entry
+        if time.monotonic() - timestamp > _DOWNLOAD_CACHE_TTL_SECONDS:
+            _DOWNLOAD_CACHE.pop(key, None)
+            return None
+        return df.copy()
+
+
+def _cache_put(key: tuple[str, str, str], df: pd.DataFrame) -> None:
+    with _DOWNLOAD_CACHE_LOCK:
+        if len(_DOWNLOAD_CACHE) >= _DOWNLOAD_CACHE_MAX_ENTRIES and key not in _DOWNLOAD_CACHE:
+            oldest = min(_DOWNLOAD_CACHE.items(), key=lambda kv: kv[1][0])[0]
+            _DOWNLOAD_CACHE.pop(oldest, None)
+        _DOWNLOAD_CACHE[key] = (time.monotonic(), df.copy())
+
+
+def _clear_download_cache() -> None:
+    """Test hook – wipe the in-process price-history cache."""
+    with _DOWNLOAD_CACHE_LOCK:
+        _DOWNLOAD_CACHE.clear()
+
+
 def download_data(ticker: str, start: str, end: str | None = None) -> pd.DataFrame:
     if end is None:
         end = (date.today() + timedelta(days=1)).isoformat()
+
+    cache_key = (ticker.upper(), start, end)
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
 
     try:
         df = yf.download(
@@ -93,7 +144,9 @@ def download_data(ticker: str, start: str, end: str | None = None) -> pd.DataFra
             "Downloaded data is missing required price columns for this ticker."
         )
 
-    return df[required_columns].dropna().copy()
+    cleaned = df[required_columns].dropna().copy()
+    _cache_put(cache_key, cleaned)
+    return cleaned
 
 
 def add_features(df: pd.DataFrame) -> pd.DataFrame:

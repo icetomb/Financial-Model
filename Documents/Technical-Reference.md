@@ -14,6 +14,7 @@
    - [services/downside_risk.py — Downside Risk Scanner](#servicesdownside_riskpy--downside-risk-scanner)
    - [services/evaluation.py — Pending-Prediction Evaluator](#servicesevaluationpy--pending-prediction-evaluator)
    - [services/backtests.py — Monthly Batch Helpers](#servicesbacktestspy--monthly-batch-helpers)
+   - [services/yf_resilience.py — Yahoo Finance Retry Helper](#servicesyf_resiliencepy--yahoo-finance-retry-helper)
    - [services/news_analysis.py — Sentiment Engine](#servicesnews_analysispy--sentiment-engine)
    - [services/stock_universe.py — Ticker Universe](#servicesstock_universepy--ticker-universe)
    - [scripts/run_monthly_backtest.py — Monthly Cron Runner](#scriptsrun_monthly_backtestpy--monthly-cron-runner)
@@ -44,6 +45,7 @@ Financial-Model/
 │   ├── downside_risk.py            # "Likely Decliners" downside-risk scanner
 │   ├── evaluation.py               # Pending-prediction evaluator (shared route + cron)
 │   ├── backtests.py                # Monthly batch helpers + summary aggregation
+│   ├── yf_resilience.py            # Retry helper for transient yfinance HTTP errors
 │   ├── news_analysis.py            # Keyword sentiment + recency scoring
 │   └── stock_universe.py           # Static ~200+ ticker universe
 ├── scripts/
@@ -664,6 +666,43 @@ Calls `db.get_batch_ids()` then maps each entry to a `summarize_batch` result. N
 
 ---
 
+### `services/yf_resilience.py` — Yahoo Finance Retry Helper
+
+**Purpose:** Tiny, self-contained resilience layer for transient HTTP / network failures from Yahoo Finance. Used by the monthly backtest cron to keep one bad ticker (or one of Yahoo's frequent `401 Unauthorized` blips) from poisoning the whole run.
+
+#### Public API
+
+```python
+from services.yf_resilience import is_transient_error, with_retries
+
+result = with_retries(
+    run_model,
+    "Model 1",
+    "AAPL",
+    attempts=3,
+    base_delay=1.5,
+    logger=log,
+    label="AAPL/Model 1",
+)
+```
+
+| Symbol | Description |
+|---|---|
+| `is_transient_error(exc)` | Returns `True` if *exc* — or any exception in its `__cause__` / `__context__` chain — looks like a transient HTTP/network failure. Detects HTTP status codes (`401`, `429`, `500`, `502`, `503`, `504`), common message patterns (`unauthorized`, `too many requests`, `rate limit`, `timed out`, `connection refused/reset/aborted`, `temporarily unavailable`, `bad gateway`, `service unavailable`, `gateway timeout`, `remote end closed`), and exception types (`urllib.error.URLError/HTTPError`, `requests.exceptions.{ConnectionError,Timeout,HTTPError}`, `TimeoutError`, `ConnectionError`). Walks the cause chain because `models.model_1.download_data` raises `PredictionError` *from* the underlying HTTP error. |
+| `with_retries(fn, *args, attempts=3, base_delay=1.5, max_delay=10, logger=None, label="operation", sleeper=None, **kwargs)` | Calls `fn(*args, **kwargs)`. On a transient error, waits `base_delay * 2**(attempt-1)` (capped at `max_delay`) and retries — so default delays are 1.5 s, 3 s, then give up. **Non-transient errors are re-raised immediately**, so a model's "not enough history" `PredictionError` does not trigger 3 expensive retries. The `sleeper` argument exists for tests and is resolved at call time so a monkeypatched `time.sleep` works. |
+| `DEFAULT_ATTEMPTS = 3` | Total tries (initial + 2 retries) used when the cron script does not override it. |
+| `DEFAULT_BASE_DELAY = 1.5` | Seconds for the first backoff. |
+
+#### Why retry-on-401
+
+Yahoo's `401 Unauthorized` responses are *not* genuine auth failures in our usage — they're a session/cookie-rotation artifact and almost always succeed when the same call is repeated seconds later. The retry helper treats `401` like any other transient code so we don't have to special-case it everywhere.
+
+#### How the cron uses it
+
+`scripts/run_monthly_backtest.py` wraps every `run_model(model_name, ticker)` call in `with_retries(...)` with `label=f"{ticker}/{model_name}"`. After all attempts fail, the calling code uses `is_transient_error(exc)` to classify the failure as `data_failure` (transient — gets recorded in `failed_tickers`) or `model_failure` (genuine — recorded as a regular error).
+
+---
+
 ### `services/news_analysis.py` — Sentiment Engine
 
 **Purpose:** Converts a list of raw headline strings into a structured sentiment report with score, label, theme flags, and a prose summary.
@@ -770,25 +809,46 @@ _UNIVERSE = [
    - `limit=DEFAULT_TOP_N` (default 50, override with `--top-n`)
 4. For each `(ticker, model)` pair in the cartesian product of the top-50 list × `models.get_available_models()`:
    - If `db.prediction_exists_in_batch(batch_id, ticker, model_name)` is True, skip with an `[skip]` log line.
-   - Otherwise call `models.run_model(model_name, ticker)` and persist via `db.save_prediction(...)` with full batch metadata: `batch_id`, `batch_date`, `prediction_source="monthly_backtest"`, `recommendation_rank`, `recommendation_score`.
-   - `PredictionError` and unexpected exceptions are caught per call so a single bad ticker / model does not kill the run.
-5. Prints a structured summary on stdout — easy to grep in the cron log file:
+   - Otherwise call `with_retries(models.run_model, model_name, ticker, attempts=3, base_delay=1.5)` (see `services/yf_resilience.py`). Transient HTTP errors (401/429/5xx/timeouts/connection issues) are retried with exponential backoff before being recorded as a *data-fetch failure*; non-transient errors short-circuit and are recorded as *model failures*.
+   - On success, persist via `db.save_prediction(...)` with full batch metadata: `batch_id`, `batch_date`, `prediction_source="monthly_backtest"`, `recommendation_rank`, `recommendation_score`.
+   - `PredictionError`, `Exception`, and database-write errors are all caught per call so a single bad ticker / model never kills the run.
+5. Sleeps `SLEEP_BETWEEN_TICKERS_SECONDS` (default 1.0 s) between *tickers* (not between models for the same ticker, since the cache makes those near-instant) so the script does not hammer Yahoo Finance during a 50-ticker run.
+6. Prints a structured summary on stdout — easy to grep in the cron log file:
 
-```
+```jsonc
 {
-  "batch_id":              "recommendations_2026_05",
-  "batch_date":            "2026-05-01",
-  "recommendation_count":  50,
-  "models":                ["Model 1", "Model 2"],
-  "attempted":             100,
-  "saved":                 100,
-  "skipped":               0,
-  "error_count":           0,
-  "errors":                []
+  "batch_id":             "recommendations_2026_05",
+  "batch_date":           "2026-05-01",
+  "recommendation_count": 50,
+  "models":               ["Model 1", "Model 2"],
+  "attempted":            100,
+  "saved":                98,
+  "skipped":              0,
+  "data_failure_count":   2,                  // transient yfinance failures
+  "model_failure_count":  0,                  // genuine prediction errors
+  "error_count":          2,                  // sum of the two above
+  "failed_tickers":       ["XYZ"],            // tickers with at least one data failure
+  "data_failures":        [
+    { "ticker": "XYZ", "model_name": "Model 1", "error": "Could not download…" },
+    { "ticker": "XYZ", "model_name": "Model 2", "error": "Could not download…" }
+  ],
+  "model_failures":       [],
+  "errors":               [
+    "XYZ/Model 1 (data): Could not download…",
+    "XYZ/Model 2 (data): Could not download…"
+  ]
 }
 ```
 
 The script exits non-zero only when nothing was saved AND there were errors, so a broken cron is visible in the system mail without the noisy "every run is a failure" pattern that comes from exiting non-zero on partial-success runs.
+
+#### Resilience constants
+
+| Constant | Default | Purpose |
+|---|---|---|
+| `RETRY_ATTEMPTS` | 3 | Initial call + 2 retries per `(ticker, model)` |
+| `RETRY_BASE_DELAY_SECONDS` | 1.5 | First backoff delay; doubles each subsequent retry |
+| `SLEEP_BETWEEN_TICKERS_SECONDS` | 1.0 | Pause between tickers (passed to `run(sleep_between_tickers=...)` in tests) |
 
 #### CLI
 
@@ -855,18 +915,24 @@ A temporary SQLite database is created per test session using pytest fixtures; `
 
 ### `tests/test_backtests.py` — Backtest Test Suite
 
-**Purpose:** Pytest coverage for the monthly automation, batch metadata, summary aggregation, and `/api/backtests` endpoints. 22 tests, all using the same temporary-SQLite fixture pattern as `test_recommendations.py`.
+**Purpose:** Pytest coverage for the monthly automation, batch metadata, summary aggregation, the resilience layer, and `/api/backtests` endpoints. 45 tests, all using the same temporary-SQLite fixture pattern as `test_recommendations.py`.
 
 | Test class | What is covered |
 |---|---|
 | `TestBatchId` | `make_batch_id` formatting, single-digit month padding, default `today` behaviour, custom prefix |
-| `TestPredictionBatchMetadata` | `save_prediction` accepts and persists batch fields; `prediction_exists_in_batch` returns True / False correctly across `(batch_id, ticker, model_name)` combinations; `get_predictions_by_batch` orders by `recommendation_rank` |
+| `TestPredictionBatchMetadata` | `save_prediction` accepts and persists batch fields; `prediction_exists_in_batch` returns True / False correctly across `(batch_id, ticker, model_name)` combinations; `get_predictions_by_batch` orders by `recommendation_rank`; the unique partial index rejects duplicate batch rows but allows multiple `batch_id IS NULL` rows |
+| `TestLegacyDatabaseMigration` | Hand-builds a pre-feature `predictions` table, inserts a legacy row, calls `init_db()` and asserts the migration ran, columns exist, legacy data survives, the unique index was created, and `_migrate_predictions_table` is idempotent |
 | `TestMonthlyBacktestRunner` | Top-50 default + correct kwargs passed to `get_recommendations`; iterates over **every registered model**; saves full batch metadata on each row; **idempotency** (running the script twice in the same month creates no duplicates and reports correct skipped/saved counts); `PredictionError` is caught and recorded, never raised |
 | `TestBacktestSummary` | `summarize_batch` produces correct totals + per-model accuracy; returns `None` for unknown IDs; `list_batch_summaries` returns one entry per distinct batch |
 | `TestEvaluationScript` | The cron script's `run()` delegates to `services.evaluation.evaluate_pending_predictions` rather than reimplementing logic |
 | `TestBacktestApi` | `/api/backtests` returns the summary list; `/api/backtests/<batch_id>` returns the per-model breakdown; unknown batch IDs return 404 |
+| `TestIsTransientError` | Detects 401/429/timeout/5xx/connection patterns; walks the `__cause__` chain (so a `PredictionError` chained from a 401 still counts as transient); returns False for genuine model errors |
+| `TestWithRetries` | Returns immediately on success; recovers after transient failures within the attempt budget; raises the last exception once attempts are exhausted; **does not retry non-transient errors** |
+| `TestRetryAndResilience` | Cron script retries transient errors; classifies them as `data_failure` after exhaustion; classifies non-transient errors as `model_failure` and does not retry; one bad ticker does not break the rest of the batch and shows up exactly once in `failed_tickers` |
+| `TestDownloadCacheReuse` | The in-process cache in `models.model_1.download_data` makes the second call for the same ticker skip the network |
+| `TestStaleFundamentalsFallback` | When `yf.Ticker(...).info` raises (e.g. a 401), `services.recommendations._fetch_stock_data` returns the stale fundamentals row instead of dropping the ticker |
 
-`run_model` and `get_recommendations` are mocked in every backtest-runner test so the pytest run never touches Yahoo Finance.
+`run_model` and `get_recommendations` are mocked in every backtest-runner test so the pytest run never touches Yahoo Finance, and a `_no_sleeps` autouse fixture monkeypatches `time.sleep` so retry backoff and inter-ticker pauses do not stretch the suite.
 
 ---
 
@@ -1094,9 +1160,38 @@ The deployment doc also lists the one-time `mkdir -p /var/www/Financial-Model/lo
 
 Five columns added to the `predictions` table; an index added on `batch_id`. Schema details in § 5 above. Existing databases are migrated automatically by `_ensure_prediction_batch_columns(conn)` inside `init_db()` — no manual migration required.
 
-### 6.10 Assumptions and limitations
+### 6.10 Failure handling
 
-- **Yahoo Finance availability.** Both scripts depend on `yfinance` working at the moment they run. Errors are caught per-ticker so a transient failure does not crash the whole run, but a multi-hour outage will produce an empty batch.
+The monthly backtest treats Yahoo Finance flakiness as a routine event rather than an exceptional one. The flow looks like:
+
+```
+for each (ticker, model):
+    with_retries(run_model, model, ticker, attempts=3, base_delay=1.5)
+        ├─ transient HTTP error → wait 1.5 s → retry → wait 3 s → retry → give up
+        └─ non-transient error  → re-raise immediately (no retries)
+
+after retries exhausted:
+    is_transient_error(exc)?
+        ├─ True  → outcome = data_failure   → ticker recorded in failed_tickers
+        └─ False → outcome = model_failure
+```
+
+| Detection | Patterns matched (any) |
+|---|---|
+| HTTP status codes | 401, 429, 500, 502, 503, 504 |
+| Message keywords | unauthorized, too many requests, rate limit, timed out, connection (refused/reset/aborted), temporarily unavailable, bad gateway, service unavailable, gateway timeout, remote end closed |
+| Exception types | `urllib.error.URLError/HTTPError`, `requests.exceptions.{ConnectionError,Timeout,HTTPError}`, `TimeoutError`, `ConnectionError` |
+
+Detection walks `__cause__` and `__context__`, so `PredictionError("Could not download stock data") from urllib.error.HTTPError(401)` is correctly classified as transient even though the outer exception type is `PredictionError`.
+
+Two complementary mitigations reduce the load on Yahoo before retries even kick in:
+
+1. **In-process download caches** in `models/model_1.py` and `models/model_2.py`. The first time `download_data("AAPL", ...)` is called, the resulting DataFrame is stored under `(ticker, start, end)` for 5 minutes; subsequent calls within that window skip the network. SPY and `^VIX` are cached the same way, so a 50-ticker Model 2 pass downloads them once instead of 100 times.
+2. **Stale-cache fallback** in `services/recommendations._fetch_stock_data`. If the live `yf.Ticker(ticker).info` call raises, the function returns the existing (expired) fundamentals row instead of dropping the ticker entirely.
+
+### 6.11 Assumptions and limitations
+
+- **Yahoo Finance availability.** Both scripts depend on `yfinance` working at the moment they run. Per-ticker retries + per-pair classification keep a single transient blip from breaking the run, but a multi-hour outage will still produce a partly-empty batch (recorded in `failed_tickers`).
 - **Top-50 is a snapshot.** The recommendation list reflects fundamentals + news at the moment the script runs. A stock that drops out of the top 50 next month is not removed from this month's batch — that is intentional, since each batch is a frozen forward-test.
 - **Single-process SQLite.** The cron runs and the Flask app share the same `financial_model.db` file. SQLite's locking is fine for this volume (one cron run per month, low concurrent writes), but heavy concurrent traffic against the same DB could surface "database is locked" errors. If that becomes a problem, switching to WAL mode (`PRAGMA journal_mode=WAL`) is the cheap first step.
 - **No retraining.** Each prediction trains a fresh XGBoost model from scratch using the existing `build_prediction` pipeline. Backtest accuracy is therefore equivalent to "what would a user have seen if they ran the model manually at this moment", which is the property the project explicitly wants.
