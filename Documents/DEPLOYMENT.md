@@ -101,7 +101,7 @@ apt install python3-pip python3-venv git nginx -y
 ## 4. Cloning the Repo
 
 ```bash
-cd /var/www
+cd /var/www/Financial-Model
 git clone -b main https://github.com/icetomb/Financial-Model.git
 cd Financial-Model
 ```
@@ -250,7 +250,115 @@ Then refresh the website to confirm the update is live.
 
 ---
 
-## 11. Useful Commands
+## 11. Automated Cron Jobs (Monthly Backtest + Daily Evaluation)
+
+The project ships with two cron-friendly Python scripts that automate the **monthly backtesting** feature:
+
+| Script | Cadence | What it does |
+|---|---|---|
+| `scripts/run_monthly_backtest.py` | First of every month | Pulls the **top 50 recommendations** using the same defaults as the Recommendations page, then runs **every prediction model** (`models.get_available_models()`) for each ticker. Each prediction is saved to the `predictions` table tagged with a `batch_id` such as `recommendations_2026_05`. |
+| `scripts/run_evaluation.py` | Daily | Runs the same evaluation logic as the **Evaluate** button on the Predictions page. Any prediction whose 30-day horizon has elapsed is scored against actual Yahoo Finance closing prices. |
+
+Both scripts are idempotent: running the monthly script twice in the same calendar month creates **no duplicate rows** (the duplicate check is on `batch_id` + `ticker` + `model_name`); running the evaluator multiple times in a day is also safe (only `pending` rows are touched).
+
+---
+
+### 11.1 Running the Scripts Manually First
+
+Before adding cron entries, smoke-test both scripts on the server:
+
+```bash
+cd /var/www/Financial-Model
+source venv/bin/activate
+
+# Quick smoke test of the monthly backtest with only 2 tickers so it
+# finishes in seconds rather than minutes.
+venv/bin/python scripts/run_monthly_backtest.py --top-n 2 --verbose
+
+# Then the full run (top 50 × every model).  This will take a few minutes.
+venv/bin/python scripts/run_monthly_backtest.py
+
+# Evaluation – fast, only touches predictions whose 30-day horizon has elapsed.
+venv/bin/python scripts/run_evaluation.py
+```
+
+Both scripts print a JSON summary on stdout when they finish — useful for grepping the cron log file later.
+
+---
+
+### 11.2 Create the Logs Directory
+
+Cron writes the script output to log files; create the directory first:
+
+```bash
+mkdir -p /var/www/Financial-Model/logs
+chmod 755 /var/www/Financial-Model/logs
+```
+
+---
+
+### 11.3 Install the Cron Entries
+
+Open `root`'s crontab:
+
+```bash
+crontab -e
+```
+
+Add the following two lines:
+
+```
+# Monthly backtest – runs at 09:00 UTC on the 1st of every month
+0 9 1 * * cd /var/www/Financial-Model && /var/www/Financial-Model/venv/bin/python scripts/run_monthly_backtest.py >> /var/www/Financial-Model/logs/monthly_backtest.log 2>&1
+
+# Daily evaluation – runs at 00:00 UTC every day
+0 0 * * * cd /var/www/Financial-Model && /var/www/Financial-Model/venv/bin/python scripts/run_evaluation.py >> /var/www/Financial-Model/logs/evaluation.log 2>&1
+```
+
+Save and exit. Confirm the entries are installed:
+
+```bash
+crontab -l
+```
+
+---
+
+### 11.4 Verifying the Scheduled Jobs
+
+| Task | Command |
+|---|---|
+| List installed cron entries | `crontab -l` |
+| Tail the monthly backtest log | `tail -n 200 /var/www/Financial-Model/logs/monthly_backtest.log` |
+| Tail the evaluation log | `tail -n 200 /var/www/Financial-Model/logs/evaluation.log` |
+| Inspect the most recent batch via the API | `curl http://127.0.0.1:8000/api/backtests | jq` |
+| Detail for a specific batch | `curl http://127.0.0.1:8000/api/backtests/recommendations_2026_05 | jq` |
+| Spot-check raw rows in SQLite | `sqlite3 /var/www/Financial-Model/financial_model.db "SELECT batch_id, ticker, model_name, predicted_return, status FROM predictions WHERE batch_id IS NOT NULL ORDER BY id DESC LIMIT 20;"` |
+
+If you don't have `jq` installed, omit the pipe; the JSON will print directly.
+
+---
+
+### 11.5 Troubleshooting
+
+**Cron entry installed but the log file never appears.**
+Cron uses a minimal environment. Confirm the absolute path to the venv interpreter exists (`ls -l /var/www/Financial-Model/venv/bin/python`) and that the `cd` target is correct. Also check that `/var/www/Financial-Model/logs` exists and is writable.
+
+**`python: command not found` in the log file.**
+You used `python` instead of the absolute path. Always invoke the venv interpreter directly: `/var/www/Financial-Model/venv/bin/python`.
+
+**`sqlite3.OperationalError: database is locked` in the log.**
+The cron run collided with a request from the live Flask app holding a write lock. SQLite handles this with a short retry; if it surfaces in the log file, switching the database to WAL mode is the cheap fix:
+
+```bash
+sqlite3 /var/www/Financial-Model/financial_model.db "PRAGMA journal_mode=WAL;"
+```
+
+**Backfilling a missed month.**
+If the cron didn't run at the start of a month and you still want a batch for it, simply run the script manually — the `batch_id` is derived from `date.today()`, so re-running today produces the current month's batch. To backfill a *past* month, edit the script's `make_batch_id(today)` call to pass an explicit date, or insert your own one-off rows; this is rarely worth the trouble.
+
+---
+
+## 12. Useful Commands
 
 | Task | Command |
 |---|---|
@@ -260,10 +368,14 @@ Then refresh the website to confirm the update is live.
 | View recent app logs | `journalctl -u stockapp -n 50 --no-pager` |
 | Validate Nginx config | `nginx -t` |
 | Restart Nginx | `systemctl restart nginx` |
+| Run monthly backtest manually | `cd /var/www/Financial-Model && venv/bin/python scripts/run_monthly_backtest.py` |
+| Run evaluation manually | `cd /var/www/Financial-Model && venv/bin/python scripts/run_evaluation.py` |
+| List cron entries | `crontab -l` |
+| Tail monthly backtest log | `tail -n 200 /var/www/Financial-Model/logs/monthly_backtest.log` |
 
 ---
 
-## 12. Troubleshooting
+## 13. Troubleshooting
 
 **Visiting `http://SERVER_IP` shows the default "Welcome to nginx!" page**
 The default Nginx site is still enabled, or the `stockapp` config was not linked correctly. Make sure you ran `rm /etc/nginx/sites-enabled/default` and created the symlink in `/etc/nginx/sites-enabled/`.

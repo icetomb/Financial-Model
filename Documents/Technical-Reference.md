@@ -7,16 +7,24 @@
 3. [Module Breakdown](#3-module-breakdown)
    - [app.py — Flask Application & Routes](#apppy--flask-application--routes)
    - [database.py — SQLite Layer](#databasepy--sqlite-layer)
+   - [models/__init__.py — Model Registry](#models__init__py--model-registry)
    - [models/model_1.py — Technical Predictor](#modelsmodel_1py--technical-predictor)
    - [models/model_2.py — Market-Aware Predictor](#modelsmodel_2py--market-aware-predictor)
    - [services/recommendations.py — Screener Engine](#servicesrecommendationspy--screener-engine)
    - [services/downside_risk.py — Downside Risk Scanner](#servicesdownside_riskpy--downside-risk-scanner)
+   - [services/evaluation.py — Pending-Prediction Evaluator](#servicesevaluationpy--pending-prediction-evaluator)
+   - [services/backtests.py — Monthly Batch Helpers](#servicesbacktestspy--monthly-batch-helpers)
    - [services/news_analysis.py — Sentiment Engine](#servicesnews_analysispy--sentiment-engine)
    - [services/stock_universe.py — Ticker Universe](#servicesstock_universepy--ticker-universe)
+   - [scripts/run_monthly_backtest.py — Monthly Cron Runner](#scriptsrun_monthly_backtestpy--monthly-cron-runner)
+   - [scripts/run_evaluation.py — Daily Cron Runner](#scriptsrun_evaluationpy--daily-cron-runner)
    - [tests/test_recommendations.py — Test Suite](#teststest_recommendationspy--test-suite)
+   - [tests/test_backtests.py — Backtest Test Suite](#teststest_backtestspy--backtest-test-suite)
 4. [Frontend Layer](#4-frontend-layer)
 5. [Database Schema](#5-database-schema)
-6. [Performance Improvements & Metrics](#6-performance-improvements--metrics)
+6. [Automated Monthly Backtesting](#6-automated-monthly-backtesting)
+
+> **Note:** Performance optimisations, bug history, and migration post-mortems live in [`Documents/Bugs-Issues.md`](./Bugs-Issues.md). New entries should be added there as they are encountered.
 
 ---
 
@@ -28,15 +36,22 @@ Financial-Model/
 ├── database.py                     # SQLite schema + CRUD helpers
 ├── requirements.txt
 ├── models/
+│   ├── __init__.py                 # Model registry (MODEL_BUILDERS, run_model)
 │   ├── model_1.py                  # XGBoost predictor (18 price features)
 │   └── model_2.py                  # XGBoost predictor (29 features + SPY/VIX)
 ├── services/
 │   ├── recommendations.py          # "Likely Gainers" screener + news enrichment
 │   ├── downside_risk.py            # "Likely Decliners" downside-risk scanner
+│   ├── evaluation.py               # Pending-prediction evaluator (shared route + cron)
+│   ├── backtests.py                # Monthly batch helpers + summary aggregation
 │   ├── news_analysis.py            # Keyword sentiment + recency scoring
 │   └── stock_universe.py           # Static ~200+ ticker universe
+├── scripts/
+│   ├── run_monthly_backtest.py     # Monthly cron entry point (top 50 × all models)
+│   └── run_evaluation.py           # Daily cron entry point (evaluate pending)
 ├── tests/
-│   └── test_recommendations.py     # Full pytest suite
+│   ├── test_recommendations.py     # Full pytest suite for screener + sentiment
+│   └── test_backtests.py           # Pytest suite for monthly backtest automation
 ├── templates/                      # Jinja2 HTML templates
 └── static/                         # CSS + vanilla JavaScript
 ```
@@ -79,36 +94,15 @@ The application follows a **flat service-oriented layout**: routes in `app.py` d
 
 **Purpose:** Application factory and HTTP layer. All routing logic, request parsing, error handling, and model dispatch live here.
 
-#### Key Constants
+#### Imports and Helpers
 
-```python
-MODEL_BUILDERS = {
-    "Model 1": build_prediction_m1,
-    "Model 2": build_prediction_m2,
-}
-```
-
-A dict mapping model name strings to their `build_prediction` callables. Adding a new model only requires importing its function and adding one entry here.
+`app.py` no longer owns the model registry. It imports `run_model`, `return_direction`, `get_available_models`, and `PredictionError` from `models/__init__.py`, and `evaluate_pending_predictions` from `services/evaluation.py`. This keeps the route handlers thin: they just parse the request, delegate to the shared functions, and return JSON.
 
 #### Key Functions
 
-**`_return_direction(value: float) -> str`**
-
-Maps a predicted return float to a human-readable directional label.
-
-```
-value > 0.01  → "up"
-value < -0.01 → "down"
-otherwise     → "neutral"
-```
-
-**`_run_model(model_name: str, ticker: str) -> dict`**
-
-Looks up `model_name` in `MODEL_BUILDERS`, raises `PredictionError` with a 400 if the model is unknown, otherwise delegates to the selected `build_prediction` function. Returns the raw prediction dict.
-
 **`create_app() -> Flask`**
 
-App factory. Calls `db.init_db()` on startup (creates tables if they don't exist), then registers all routes. Returns the configured Flask instance.
+App factory. Calls `db.init_db()` on startup (creates tables if they don't exist; runs the small migration in `_ensure_prediction_batch_columns` to add monthly-backtest columns to existing databases), then registers all routes. Returns the configured Flask instance.
 
 #### API Routes
 
@@ -126,8 +120,10 @@ App factory. Calls `db.init_db()` on startup (creates tables if they don't exist
 | `POST` | `/api/predictions/run` | Runs + saves prediction; returns 409 on duplicate |
 | `DELETE` | `/api/predictions/<id>` | Deletes a prediction row |
 | `POST` | `/api/predictions/evaluate` | Evaluates all pending predictions past their 30-day horizon |
-| `GET` | `/api/models` | Returns `["Model 1", "Model 2"]` |
+| `GET` | `/api/models` | Returns `get_available_models()` (currently `["Model 1", "Model 2"]`) |
 | `GET` | `/api/performance` | Returns `get_model_performance` aggregates |
+| `GET` | `/api/backtests` | Returns one summary row per monthly batch (totals + per-model accuracy) |
+| `GET` | `/api/backtests/<batch_id>` | Returns the per-model breakdown for a single batch (404 if unknown) |
 | `GET` | `/recommendations` | Renders `recommendations.html` (tabbed: Likely Gainers + Likely Decliners), injects `sectors` list |
 | `GET` | `/api/recommendations` | Calls `get_recommendations(...)`, returns ranked Likely Gainers as JSON |
 | `GET` | `/api/industries` | Returns industries, optional `?sector=` filter |
@@ -135,9 +131,8 @@ App factory. Calls `db.init_db()` on startup (creates tables if they don't exist
 | `GET` | `/api/downside-risk` | Calls `get_downside_risk_stocks(...)`, returns ranked Likely Decliners. Query params: `sector`, `industry`, `limit`, `min_market_cap`, `use_model` (default `1`). |
 | `GET` | `/api/downside-risk/news/<ticker>` | Recent headlines for a decliner with relative-time strings (e.g. "3h ago") attached. |
 
-**Evaluation Logic (inside `/api/predictions/evaluate`):**
+**Evaluation Logic** lives in `services/evaluation.py` (`evaluate_pending_predictions`) so the cron runner can call it directly. The route is a thin wrapper that returns the same dict the function produces. For each pending prediction where `today >= prediction_date + 30 days`:
 
-For each pending prediction where `today >= prediction_date + 30 days`:
 1. Calls `yf.download(ticker, start=target_date, end=target_date + 7 days)`
 2. Flattens MultiIndex columns if present
 3. Uses the **first available close price** in the window (handles market holidays)
@@ -199,13 +194,45 @@ Stores serialized sentiment results per ticker.
 
 | Function | Description |
 |---|---|
-| `prediction_exists(ticker, model_name, prediction_date)` | Returns bool; used to prevent duplicates |
-| `save_prediction(ticker, model_name, predicted_return, predicted_price, current_price, prediction_date, target_date)` | Inserts new row |
-| `get_predictions(model_name=None)` | Returns all or filtered by model |
-| `get_pending_predictions()` | Returns rows where `actual_return IS NULL` |
+| `prediction_exists(model_name, ticker, prediction_date)` | Returns bool; used to prevent duplicates on the same calendar day |
+| `prediction_exists_in_batch(batch_id, ticker, model_name)` | Returns bool; used by `scripts/run_monthly_backtest.py` to make monthly cron runs idempotent |
+| `save_prediction(...)` | Inserts a new row. Accepts optional keyword-only batch metadata: `batch_id`, `batch_date`, `prediction_source` (default `"manual"`), `recommendation_rank`, `recommendation_score`. |
+| `get_predictions(model_name=None, ticker=None, status=None)` | Returns all rows or filtered by model / ticker / status |
+| `get_pending_predictions()` | Returns rows where `status = 'pending'` |
+| `get_predictions_by_batch(batch_id)` | Returns all rows for a single batch ordered by `recommendation_rank` then `model_name` |
+| `get_batch_ids()` | Returns one row per distinct `batch_id` (newest first) with `batch_date`, `prediction_source`, and `total_predictions` for summary endpoints |
 | `delete_prediction(prediction_id)` | Hard delete by ID |
-| `evaluate_prediction(prediction_id, actual_return, actual_price, direction_correct, magnitude_error)` | Updates evaluation columns |
+| `evaluate_prediction(prediction_id, actual_price, actual_return, actual_direction, direction_correct, magnitude_comparison, prediction_error)` | Updates evaluation columns |
 | `get_model_performance(model_name)` | Aggregates evaluated rows — direction accuracy (%), count, avg predicted return, avg actual return, avg MAE — all in percent scale |
+| `_table_columns(conn, table)` | Internal helper. Wraps `PRAGMA table_info(<table>)` and returns the set of existing column names. |
+| `_migrate_predictions_table(conn)` | Internal helper run from `init_db()`. Compares the live `predictions` schema against `_PREDICTION_BATCH_COLUMNS` and issues an `ALTER TABLE ADD COLUMN` for every column that is missing. Returns the list of columns it actually added (useful for tests / logging). Production databases upgrade automatically on the next app boot or cron run, without losing existing rows. |
+
+---
+
+### `models/__init__.py` — Model Registry
+
+**Purpose:** Single source of truth for which prediction models exist and how to invoke them. Both `app.py` and the cron scripts import from here so adding a future "Model 3" is a one-line change.
+
+#### Exports
+
+```python
+MODEL_BUILDERS: dict[str, Callable[..., dict]] = {
+    "Model 1": build_prediction_m1,
+    "Model 2": build_prediction_m2,
+}
+
+def get_available_models() -> list[str]: ...
+def run_model(model_name: str, ticker: str) -> dict: ...
+def return_direction(value: float) -> str: ...
+```
+
+| Symbol | Description |
+|---|---|
+| `MODEL_BUILDERS` | The actual registry dict. To add Model 3: import its `build_prediction` and add one entry. |
+| `get_available_models()` | Returns the list of registered model names in stable order. Drives the UI dropdown via `/api/models` and the iteration in the monthly backtest. |
+| `run_model(model_name, ticker)` | Looks up the builder and invokes it. Falls back to Model 1 if the name is unknown to preserve the existing route behaviour. |
+| `return_direction(value)` | Maps a return float to `"up"` / `"down"` / `"neutral"`. Shared by `app.py`, the evaluation service, and the monthly backtest script so the direction-mapping logic lives in one place. |
+| `PredictionError` | Re-exported from `models.model_1` so callers can `from models import PredictionError` instead of reaching into the model file. |
 
 ---
 
@@ -550,7 +577,90 @@ Full scanner pipeline (7 stages):
 6. **Stage 6 — Sort.** Final list sorted by `downside_score DESC`.
 7. **Stage 7 — Output shaping.** Returns a list of plain dicts matching the API contract: `ticker`, `company_name`, `predicted_return` (in percent), `downside_score`, `risk_level`, `news_sentiment`, `news_sentiment_color`, `news_summary`, `why_flagged`, plus a technical snapshot for the details overlay (`current_price`, `month_return`, `momentum_10d`, `volatility_annual`, `rsi`, `ma_50`, `ma_200`, `week52_high`, `week52_low`, `market_cap`, `sector`, `industry`).
 
-The two-stage design (technical-only filter → Model 1 on shortlist) is the key performance choice — see [§6.9](#69-two-stage-model-1-filter-in-the-downside-risk-scanner).
+The two-stage design (technical-only filter → Model 1 on shortlist) is the key performance choice — see [Bugs-Issues.md § 1.9](./Bugs-Issues.md#19-two-stage-model-1-filter-in-the-downside-risk-scanner).
+
+---
+
+### `services/evaluation.py` — Pending-Prediction Evaluator
+
+**Purpose:** Single implementation of the "evaluate every prediction whose 30-day horizon has elapsed" pipeline. Used by both the `POST /api/predictions/evaluate` route and the daily cron script (`scripts/run_evaluation.py`) so behaviour is identical regardless of trigger source.
+
+#### Key Functions
+
+**`evaluate_pending_predictions(today: date | None = None) -> dict`**
+
+Orchestrates the evaluation pass. Pulls pending rows via `db.get_pending_predictions()`, skips any whose `prediction_date + forecast_horizon_days` is still in the future, then for each eligible row:
+
+1. Calls `_fetch_target_close(ticker, target_date)` — `yf.download` with a 7-day window to handle market holidays, returns the first available close.
+2. Computes `actual_return = (actual_price - latest_close) / latest_close`.
+3. Maps direction with `models.return_direction`, builds the magnitude label (`equal` / `bigger` / `smaller`), computes `prediction_error = actual_return - predicted_return`.
+4. Persists via `db.evaluate_prediction(...)`.
+
+Errors per ticker are caught and appended to the `errors` list so a single bad symbol does not kill the whole batch.
+
+Returns the dict the existing UI button has always seen: `{ "evaluated_count": int, "evaluated_ids": [int, ...], "errors": [str, ...] }`.
+
+**`_fetch_target_close(ticker, target_date)`** — internal helper; flattens MultiIndex columns and returns `None` on empty data.
+
+**`_magnitude_label(predicted_return, actual_return)`** — returns `"equal"` (within 0.01 % of each other), `"bigger"` (actual > predicted in magnitude), or `"smaller"`.
+
+---
+
+### `services/backtests.py` — Monthly Batch Helpers
+
+**Purpose:** Tiny helper module shared by the monthly cron script and the `/api/backtests` endpoints. Two responsibilities:
+
+1. **Generate canonical batch IDs.** Calling the script in May 2026 produces `recommendations_2026_05`. Two runs in the same month produce the same ID, which is exactly what powers idempotency.
+2. **Aggregate per-batch / per-model stats** for the read-only inspection API.
+
+#### Constants
+
+```python
+BACKTEST_SOURCE = "monthly_backtest"
+```
+
+The `prediction_source` value written into the `predictions` table for every row created by `scripts/run_monthly_backtest.py`. Manual predictions made from the UI keep the default `"manual"` so the two are easy to tell apart.
+
+#### Key Functions
+
+**`make_batch_id(when: date | None = None, prefix: str = "recommendations") -> str`**
+
+Returns `f"{prefix}_{when.year:04d}_{when.month:02d}"`. Defaults to today's date when called without arguments.
+
+**`summarize_batch(batch_id: str) -> dict | None`**
+
+Pulls every row for `batch_id` via `db.get_predictions_by_batch`, groups by `model_name`, and returns:
+
+```python
+{
+    "batch_id":              "recommendations_2026_05",
+    "batch_date":            "2026-05-01",
+    "source":                "monthly_backtest",
+    "tickers":               ["AAPL", "MSFT", ...],          # sorted, deduplicated
+    "total_predictions":     100,
+    "completed_predictions": 50,
+    "pending_predictions":   50,
+    "models": [
+        {
+            "model_name":            "Model 1",
+            "total_predictions":     50,
+            "completed_predictions": 25,
+            "pending_predictions":   25,
+            "direction_accuracy":    64.0,    # % of completed where direction was correct
+            "avg_prediction_error":  3.2,     # mean absolute error in %
+        },
+        ...
+    ],
+}
+```
+
+Returns `None` if the batch is unknown so the API can return a clean 404.
+
+**`list_batch_summaries() -> list[dict]`**
+
+Calls `db.get_batch_ids()` then maps each entry to a `summarize_batch` result. Newest batch first.
+
+**`_aggregate(predictions)`** — internal reducer that turns a flat list of prediction rows into the totals + per-model structure above.
 
 ---
 
@@ -644,6 +754,83 @@ _UNIVERSE = [
 
 ---
 
+### `scripts/run_monthly_backtest.py` — Monthly Cron Runner
+
+**Purpose:** End-to-end automation that turns the recommendation engine into a monthly backtest dataset. Designed to be invoked from cron once a month (see `Documents/DEPLOYMENT.md` § Cron jobs).
+
+#### Behaviour
+
+1. Calls `db.init_db()` so any pending column migrations happen before writes.
+2. Builds `batch_id = make_batch_id(today)` → e.g. `recommendations_2026_05`.
+3. Calls `services.recommendations.get_recommendations(...)` with the **same defaults the Recommendations page uses**:
+   - `sector=None`, `industry=None`
+   - `min_market_cap=1_000_000_000.0` (matches the UI's `$1 B+` default)
+   - `profitable_only=False`
+   - `sort_by="score"`
+   - `limit=DEFAULT_TOP_N` (default 50, override with `--top-n`)
+4. For each `(ticker, model)` pair in the cartesian product of the top-50 list × `models.get_available_models()`:
+   - If `db.prediction_exists_in_batch(batch_id, ticker, model_name)` is True, skip with an `[skip]` log line.
+   - Otherwise call `models.run_model(model_name, ticker)` and persist via `db.save_prediction(...)` with full batch metadata: `batch_id`, `batch_date`, `prediction_source="monthly_backtest"`, `recommendation_rank`, `recommendation_score`.
+   - `PredictionError` and unexpected exceptions are caught per call so a single bad ticker / model does not kill the run.
+5. Prints a structured summary on stdout — easy to grep in the cron log file:
+
+```
+{
+  "batch_id":              "recommendations_2026_05",
+  "batch_date":            "2026-05-01",
+  "recommendation_count":  50,
+  "models":                ["Model 1", "Model 2"],
+  "attempted":             100,
+  "saved":                 100,
+  "skipped":               0,
+  "error_count":           0,
+  "errors":                []
+}
+```
+
+The script exits non-zero only when nothing was saved AND there were errors, so a broken cron is visible in the system mail without the noisy "every run is a failure" pattern that comes from exiting non-zero on partial-success runs.
+
+#### CLI
+
+```
+usage: run_monthly_backtest.py [-h] [--top-n TOP_N] [--verbose]
+```
+
+| Flag | Default | Purpose |
+|---|---|---|
+| `--top-n N` | 50 | Override the recommendation count, useful for testing. |
+| `--verbose` | off | Switch logging to DEBUG. |
+
+#### Public API
+
+The script also exports `run(top_n=50, verbose=False) -> dict` so other Python code (and tests) can invoke the same pipeline without going through `argparse`.
+
+---
+
+### `scripts/run_evaluation.py` — Daily Cron Runner
+
+**Purpose:** Runs the same evaluation pipeline as the **Evaluate** button on the Predictions page, but from the command line so it can be cron-driven.
+
+The whole script is intentionally a thin wrapper. It calls `db.init_db()`, then `services.evaluation.evaluate_pending_predictions()`, logs the result, and prints the JSON summary. Because both this script and the route share the underlying function, the behaviour stays consistent regardless of trigger source.
+
+#### CLI
+
+```
+usage: run_evaluation.py [-h] [--verbose]
+```
+
+The summary printed on stdout matches the route response shape exactly:
+
+```
+{
+  "evaluated_count": 12,
+  "evaluated_ids":   [101, 102, 103, ...],
+  "errors":          []
+}
+```
+
+---
+
 ### `tests/test_recommendations.py` — Test Suite
 
 **Purpose:** 873-line pytest suite providing broad coverage of the screener, sentiment, database, and Flask routes.
@@ -663,6 +850,23 @@ _UNIVERSE = [
 | Sentiment pipeline | Full `analyze_headlines` output shape and field types |
 
 A temporary SQLite database is created per test session using pytest fixtures; `_enrich_with_news` is monkeypatched to a no-op in most tests to isolate screener logic from live network calls.
+
+---
+
+### `tests/test_backtests.py` — Backtest Test Suite
+
+**Purpose:** Pytest coverage for the monthly automation, batch metadata, summary aggregation, and `/api/backtests` endpoints. 22 tests, all using the same temporary-SQLite fixture pattern as `test_recommendations.py`.
+
+| Test class | What is covered |
+|---|---|
+| `TestBatchId` | `make_batch_id` formatting, single-digit month padding, default `today` behaviour, custom prefix |
+| `TestPredictionBatchMetadata` | `save_prediction` accepts and persists batch fields; `prediction_exists_in_batch` returns True / False correctly across `(batch_id, ticker, model_name)` combinations; `get_predictions_by_batch` orders by `recommendation_rank` |
+| `TestMonthlyBacktestRunner` | Top-50 default + correct kwargs passed to `get_recommendations`; iterates over **every registered model**; saves full batch metadata on each row; **idempotency** (running the script twice in the same month creates no duplicates and reports correct skipped/saved counts); `PredictionError` is caught and recorded, never raised |
+| `TestBacktestSummary` | `summarize_batch` produces correct totals + per-model accuracy; returns `None` for unknown IDs; `list_batch_summaries` returns one entry per distinct batch |
+| `TestEvaluationScript` | The cron script's `run()` delegates to `services.evaluation.evaluate_pending_predictions` rather than reimplementing logic |
+| `TestBacktestApi` | `/api/backtests` returns the summary list; `/api/backtests/<batch_id>` returns the per-model breakdown; unknown batch IDs return 404 |
+
+`run_model` and `get_recommendations` are mocked in every backtest-runner test so the pytest run never touches Yahoo Finance.
 
 ---
 
@@ -726,200 +930,174 @@ CREATE TABLE news_analysis_cache (
 );
 
 CREATE TABLE predictions (
-    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-    ticker              TEXT NOT NULL,
-    model_name          TEXT NOT NULL,
-    predicted_return    REAL,
-    predicted_price     REAL,
-    current_price       REAL,
-    prediction_date     TEXT,
-    target_date         TEXT,
-    actual_return       REAL,    -- NULL until evaluated
-    actual_price        REAL,
-    direction_correct   INTEGER,
-    magnitude_error     REAL,
-    evaluated_at        TEXT
+    id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+    model_name            TEXT NOT NULL DEFAULT 'Model 1',
+    ticker                TEXT NOT NULL,
+    prediction_date       TEXT NOT NULL,
+    latest_close          REAL NOT NULL,
+    predicted_return      REAL NOT NULL,
+    predicted_price       REAL NOT NULL,
+    predicted_direction   TEXT NOT NULL,
+    forecast_horizon_days INTEGER NOT NULL DEFAULT 30,
+    status                TEXT NOT NULL DEFAULT 'pending',
+    actual_price          REAL,
+    actual_return         REAL,
+    actual_direction      TEXT,
+    direction_correct     INTEGER,
+    magnitude_comparison  TEXT,
+    prediction_error      REAL,
+    evaluated_at          TEXT,
+    created_at            TEXT NOT NULL,
+
+    -- Monthly backtest metadata (added by the automated backtesting feature).
+    -- Existing databases are migrated in-place via _ensure_prediction_batch_columns.
+    batch_id              TEXT,                                  -- e.g. 'recommendations_2026_05'
+    batch_date            TEXT,                                  -- ISO date the cron run started
+    prediction_source     TEXT NOT NULL DEFAULT 'manual',        -- 'manual' | 'monthly_backtest'
+    recommendation_rank   INTEGER,                               -- rank in the top-N list at time of run
+    recommendation_score  REAL                                   -- recommendation_score at time of run
 );
+
+-- Unique partial index: enforces (batch_id, ticker, model_name) uniqueness
+-- for monthly-backtest rows while leaving legacy / manual rows
+-- (batch_id IS NULL) out of the uniqueness check entirely.  Also serves
+-- as the read index for batch lookups since batch_id is the leading column.
+CREATE UNIQUE INDEX idx_predictions_batch_unique
+    ON predictions(batch_id, ticker, model_name)
+    WHERE batch_id IS NOT NULL;
 ```
 
----
+#### Monthly backtest columns
 
-## 6. Performance Improvements & Metrics
-
-This section documents architectural and algorithmic decisions that measurably improved runtime behavior. All measurements below are based on worst-case behavior against the full screener universe (~200 tickers) without any warm cache.
-
----
-
-### 6.1 Parallel Fundamentals Fetching — `ThreadPoolExecutor` in `get_recommendations`
-
-**Problem:** The original naive implementation fetched `yf.Ticker(ticker).info` sequentially for every stock in the screener universe. Each network round-trip to Yahoo Finance averages **0.8–1.5 seconds** per ticker under normal conditions.
-
-**Calculation (sequential baseline):**
-- 200 tickers × 1.2 s average = **~240 seconds** per full screener run
-
-**Solution:** Replaced sequential loop with `ThreadPoolExecutor(max_workers=8)` submitting `_fetch_stock_data` for all tickers simultaneously, collecting results via `as_completed`.
-
-```python
-with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-    futures = {executor.submit(_fetch_stock_data, c["ticker"]): c for c in candidates}
-    for future in as_completed(futures):
-        result = future.result()
-        if result:
-            fetched.append(result)
-```
-
-**Result:** With 8 workers, 200 tickers complete in approximately `200 / 8 × 1.2 s ≈ 30 seconds` under ideal conditions — an **~8× reduction** in wall-clock fetch time (from ~240 s to ~30 s).
-
-**Note:** `MAX_WORKERS = 8` was chosen to balance throughput against Yahoo Finance rate-limiting. Values above 10 begin to trigger throttling errors in testing.
-
----
-
-### 6.2 Parallel News Enrichment — `ThreadPoolExecutor` in `_enrich_with_news`
-
-**Problem:** After scoring, each stock also required a news sentiment fetch. Fetching news sequentially for the full universe added another 60–120 seconds to screener response time.
-
-**Calculation (sequential baseline):**
-- 200 tickers × 0.4 s average news fetch = **~80 seconds** additional
-
-**Solution:** `_enrich_with_news` uses its own `ThreadPoolExecutor(max_workers=8)` identical in structure to the fundamentals fetch.
-
-**Result:** News enrichment time reduced from **~80 s to ~10 s** — a **~8× reduction**, bringing total screener pipeline time from **~320 s to ~40 s** on a cold cache.
-
----
-
-### 6.3 Two-Tier Caching — Fundamentals (24h) and News (4h)
-
-**Problem:** Even with parallelism, the screener was slow on repeated calls within the same day because yfinance was re-queried for data that had not changed.
-
-**Solution:** Two SQLite cache tables with TTL-based expiry:
-
-| Cache | TTL | Scope | Eviction |
-|---|---|---|---|
-| `fundamentals_cache` | 24 hours | All `Ticker.info` fields | `last_updated < now - 24h` check in `_fetch_stock_data` |
-| `news_analysis_cache` | 4 hours | Processed sentiment result | `last_updated < now - 4h` check in `_get_news_analysis` |
-
-**Result on warm cache:** Full screener response time drops to **< 1 second** for any subsequent call within the TTL window — essentially a pure DB read + scoring pass. This is a **>40× improvement** over the cold-cache parallel path and a **>300× improvement** over the original sequential cold baseline.
-
-The 4-hour TTL for news reflects the higher freshness requirement of sentiment data versus fundamentals, which change on a daily or quarterly basis.
-
----
-
-### 6.4 Duplicate Headline Removal — `SequenceMatcher` Deduplication
-
-**Problem:** Yahoo Finance's news API frequently returns near-identical syndicated headlines (e.g., "Apple beats earnings" appearing from MarketWatch, Reuters, and Yahoo Finance simultaneously). Counting these as separate articles artificially inflated sentiment scores.
-
-**Solution:** Before scoring, `analyze_headlines` runs an O(n²) pairwise similarity check:
-
-```python
-def _is_near_duplicate(a: str, b: str) -> bool:
-    return SequenceMatcher(None, a, b).ratio() >= DUPLICATE_SIMILARITY  # 0.8
-```
-
-Each new headline is compared against already-accepted headlines. If similarity ≥ 0.80, it is discarded.
-
-**Result:** In practice, a fetch of 10–20 raw headlines for a high-coverage ticker typically reduces to **6–12 unique headlines**, preventing a 2–3× inflation of sentiment confidence that would otherwise distort the score adjustment by the full `±10` bounds when only 1–2 underlying stories exist.
-
----
-
-### 6.5 Recency-Weighted Sentiment Scoring
-
-**Problem:** A flat average of all headlines weighted all articles equally, meaning a 2-week-old negative story had the same influence as yesterday's earnings beat.
-
-**Solution:** `_recency_weight` assigns a linear decay factor:
-
-```python
-days_ago = (now - published_date).days
-weight = max(0.0, 1.0 - (days_ago / RECENCY_DECAY_DAYS))  # RECENCY_DECAY_DAYS = 14
-```
-
-Each headline's `±1` score is multiplied by its weight before aggregation.
-
-**Result:** Headlines older than 14 days contribute zero weight; yesterday's news contributes full weight. This aligns the sentiment score with the market's own recency bias and reduces false signals from stale news by approximately **50–70%** in back-of-envelope testing (articles >7 days old now contribute at most 0.5× their raw score).
-
----
-
-### 6.6 Parallel Model Predictions on Home Page — `Promise.all` in `script.js`
-
-**Problem:** The index page compares Model 1 and Model 2 side by side. A sequential approach would run Model 1, wait for it to complete (~3–8 seconds depending on ticker history length), then run Model 2.
-
-**Solution:** `static/script.js` fires both predictions simultaneously:
-
-```javascript
-const [result1, result2] = await Promise.all([
-    fetch("/predict", { method: "POST", body: JSON.stringify({ ticker, model_name: "Model 1" }) }),
-    fetch("/predict", { method: "POST", body: JSON.stringify({ ticker, model_name: "Model 2" }) }),
-]);
-```
-
-**Result:** Total page response time is bounded by the **slower of the two models** rather than their sum. For a typical ticker:
-- Model 1 alone: ~4 s
-- Model 2 alone: ~5 s (additional SPY/VIX downloads)
-- Sequential: ~9 s
-- Parallel (`Promise.all`): ~5 s — a **~44% reduction** in perceived wait time
-
----
-
-### 6.7 `progress=False` on yfinance Downloads
-
-**Problem:** `yf.download` by default prints a tqdm progress bar to stdout for every download call. In a web server context with many concurrent downloads, this produces excessive console output and introduces measurable overhead from I/O formatting.
-
-**Solution:** All `yf.download` calls in `model_1.py`, `model_2.py`, `recommendations.py`, and `app.py` pass `progress=False`.
-
-**Result:** Eliminated unnecessary stdout I/O, reducing per-download overhead by an estimated **5–15 ms** per call — meaningful when running 200 parallel downloads during a cold screener pass (saves **1–3 seconds** in aggregate across the thread pool).
-
----
-
-### 6.8 MultiIndex Column Flattening — Robustness Across yfinance Versions
-
-**Problem:** yfinance v0.2+ returns `pd.DataFrame` with MultiIndex columns (`("Close", "AAPL")` instead of `"Close"`) when downloading a single ticker in certain configurations. This caused `KeyError` crashes when accessing `df["Close"]` directly.
-
-**Solution:** A defensive flatten is applied in every download consumer:
-
-```python
-if isinstance(df.columns, pd.MultiIndex):
-    df.columns = df.columns.get_level_values(0)
-```
-
-**Result:** Zero `KeyError` failures on column access across all yfinance version combinations tested. This is a correctness improvement that also removed the need for try/except column access fallbacks that were adding ~2 ms of overhead per model run.
-
----
-
-### 6.9 Two-Stage Model 1 Filter in the Downside Risk Scanner
-
-**Problem:** The Likely Decliners scanner wants to use Model 1's predicted 30-day return as one of its signals — but Model 1 trains a fresh XGBoost regressor per ticker, taking **3–5 seconds** per call (download + feature build + train + predict). Running it across the full ~200-ticker universe would take 8–10 minutes wall-clock even with 8 parallel workers — unusable for an interactive UI.
-
-**Calculation (naive parallel baseline):**
-- 200 tickers × ~4 s average ÷ 8 workers = **~100 seconds** even with full parallelism, plus the existing fundamentals/news fetches on top.
-
-**Solution:** A **two-stage filter** in `get_downside_risk_stocks`:
-
-1. Compute all the cheap technical signals (moving averages, RSI, volatility, momentum, volume spike, 52-week range) for the **entire universe** in parallel — this is fast (~30 s cold, near-instant with cache).
-2. Rank by technical-only downside score, take the **top N candidates** (default `model_top_n = 30`), and run Model 1 only on this shortlist.
-3. Recompute the final score with `predicted_return` populated for the shortlist, then sort and slice to the user's requested `limit`.
-
-```python
-top_candidates = enriched[: max(model_top_n, limit * 2)]  # ~30 candidates
-with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
-    futures = {pool.submit(_model1_predicted_return, d["ticker"]): d
-               for d in top_candidates}
-    for future in as_completed(futures):
-        d = futures[future]
-        d["predicted_return"] = future.result()
-```
-
-Two complementary caches keep repeat scans fast:
-
-| Cache | TTL | Scope |
+| Column | Populated when | Used by |
 |---|---|---|
-| `_MODEL_PRED_CACHE` (in-process dict) | 12 hours | Per-ticker Model 1 `predicted_return` value |
-| `_NEWS_SENTIMENT_CACHE` (in-process dict) | 4 hours | Per-ticker Layer 3 sentiment classification |
+| `batch_id` | `scripts/run_monthly_backtest.py` writes `recommendations_YYYY_MM`. Manual UI predictions leave it `NULL`. | `prediction_exists_in_batch`, `get_predictions_by_batch`, `/api/backtests/<batch_id>` |
+| `batch_date` | Set to the cron run's calendar date | Sort order in `/api/backtests` |
+| `prediction_source` | `'manual'` for UI rows, `'monthly_backtest'` for cron rows | Distinguishes automated vs ad-hoc rows in summaries |
+| `recommendation_rank` | Set to the row's position in the top-N list (1-indexed) | Sort order in `get_predictions_by_batch` |
+| `recommendation_score` | Captured from `recommendation_score` at the moment the prediction is made | Lets the inspection API show the score that drove inclusion |
 
-A `use_model=False` query parameter (exposed in the UI as the **"Include Model 1 prediction"** checkbox) lets users skip the model pass entirely for a pure technical scan.
+`_ensure_prediction_batch_columns` runs as part of `init_db()` and uses `PRAGMA table_info(predictions)` to detect missing columns, then issues `ALTER TABLE ADD COLUMN` for each one. Existing databases pick up the new schema on the next app boot or cron run; no manual migration step is required.
 
-**Result:**
+---
 
-- **Cold scan with model on:** ~30 s technical pass + ~30 candidates × 4 s ÷ 8 workers ≈ **45 s total** (a **~3× reduction** vs. the naive ~100 s parallel-everything baseline, and **>10× faster** than running Model 1 sequentially on the full universe).
-- **Warm scan (within 12 hours):** **<2 seconds** — nearly all data comes from the in-process caches; only the final scoring pass runs.
-- **Technical-only mode:** ~30 s cold, sub-second warm.
+## 6. Automated Monthly Backtesting
 
-The 12-hour Model 1 TTL was chosen because Model 1's prediction depends on a fresh training run over historical price data; intraday price moves do not meaningfully change the 30-day forward forecast, so half-day caching gives a large speedup with negligible accuracy loss.
+This section is the canonical reference for the monthly backtest automation. The high-level pitch lives in `Documents/Overview.md` § 3a; what follows is the implementation-level detail.
+
+### 6.1 Why this exists
+
+Manually picking 50 stocks each month and running every model on each one would be tedious and inconsistent. Automating it:
+
+- Produces a **fair, repeatable** comparison dataset across models.
+- Makes "Model X is better than Model Y" a measurable claim instead of a feeling.
+- Auto-evaluates itself once the 30-day horizon elapses — no human action required.
+
+### 6.2 How a monthly batch is created
+
+```
+cron @ first-of-month  →  scripts/run_monthly_backtest.py
+                              │
+                              ├─ make_batch_id(today)     # → 'recommendations_2026_05'
+                              ├─ get_recommendations(...) # top 50, page defaults
+                              └─ for each (ticker, model) in 50 × all_models:
+                                   ├─ if prediction_exists_in_batch → skip
+                                   ├─ run_model(model, ticker)
+                                   └─ db.save_prediction(..., batch_id, batch_date,
+                                                         prediction_source='monthly_backtest',
+                                                         recommendation_rank,
+                                                         recommendation_score)
+```
+
+The page defaults are hard-coded into the script as constants so they never drift from the UI:
+
+```python
+DEFAULT_TOP_N             = 50
+DEFAULT_MIN_MARKET_CAP    = 1_000_000_000.0   # matches HTML `$1 B+` selected option
+DEFAULT_SORT_BY           = "score"
+DEFAULT_FORECAST_HORIZON_DAYS = 30
+```
+
+### 6.3 How all available models are used
+
+The cron script never references "Model 1" or "Model 2" by name. It iterates over `models.get_available_models()` instead, which reads from `MODEL_BUILDERS`. Adding a future model:
+
+1. Implement `models/model_3.py` exporting a `build_prediction(ticker)` function with the same return shape.
+2. Import it into `models/__init__.py` and add `"Model 3": build_prediction_m3` to the `MODEL_BUILDERS` dict.
+
+That's the entire change. The next cron run will automatically include Model 3 alongside the others.
+
+### 6.4 How `batch_id` works
+
+| Aspect | Detail |
+|---|---|
+| Format | `recommendations_YYYY_MM` (e.g. `recommendations_2026_05`) |
+| Source | `services.backtests.make_batch_id(date.today())` |
+| Persistence | Written to every row created by the cron run |
+| Indexing | `CREATE UNIQUE INDEX idx_predictions_batch_unique ON predictions(batch_id, ticker, model_name) WHERE batch_id IS NOT NULL` — doubles as duplicate protection at the DB level *and* a fast lookup index since `batch_id` is the leading column |
+| Use cases | Idempotency check; per-batch summaries; `/api/backtests/<batch_id>` lookup; future UI grouping |
+
+### 6.5 How duplicate protection works
+
+Two layers protect against duplicates:
+
+1. **Application layer.** Before each `(ticker, model_name)` write, the script calls `db.prediction_exists_in_batch(batch_id, ticker, model_name)` — a one-row lookup against the predictions table. If a row already exists the script logs `[skip]` and increments the skipped counter; nothing is written.
+2. **Database layer.** `idx_predictions_batch_unique` is a `UNIQUE` partial index on `(batch_id, ticker, model_name) WHERE batch_id IS NOT NULL`. Even if the application-level check is bypassed (concurrent execution, manual `INSERT`, etc.), SQLite raises `IntegrityError` on the second insert. Manual rows with `batch_id IS NULL` are excluded from the uniqueness check by the `WHERE` clause, so they do not collide with one another.
+
+Two consequences:
+
+1. **Re-running the script in the same calendar month is safe.** If cron fires twice (e.g. you re-run it manually), no duplicate rows are created.
+2. **Re-running the script in a *different* month is also safe.** Different months produce different `batch_id`s, so the same ticker/model produces a fresh row.
+
+The duplicate check is intentionally separate from the existing `prediction_exists(model_name, ticker, prediction_date)` helper because they answer different questions: the older one prevents two predictions for the same calendar day from any source, and the new one prevents two predictions in the same monthly batch.
+
+### 6.6 How the evaluation script works
+
+`scripts/run_evaluation.py` is **not** a separate evaluation algorithm. It is a thin wrapper that:
+
+1. Calls `db.init_db()` (to apply any pending migrations).
+2. Calls `services.evaluation.evaluate_pending_predictions()` — the same function the **Evaluate** UI button has always called.
+3. Logs and prints the JSON summary.
+
+The shared service iterates over `db.get_pending_predictions()`, skips rows where `today < prediction_date + forecast_horizon_days`, and for each eligible row downloads the actual close price via `yf.download` and records `actual_return`, `direction_correct`, `magnitude_comparison`, and `prediction_error`. Predictions made by the monthly backtest are picked up automatically because they have `status = 'pending'` like any other prediction.
+
+### 6.7 How to run both scripts manually
+
+From the repo root (or `/var/www/Financial-Model` on the server):
+
+```bash
+# Monthly backtest – top 50 by default, override with --top-n
+venv/bin/python scripts/run_monthly_backtest.py
+venv/bin/python scripts/run_monthly_backtest.py --top-n 5 --verbose   # quick smoke test
+
+# Evaluate pending predictions whose horizon has elapsed
+venv/bin/python scripts/run_evaluation.py
+```
+
+Both scripts emit a final JSON summary on stdout; logs go through Python's logging module with timestamps.
+
+### 6.8 How to set up the cron jobs on DigitalOcean
+
+See `Documents/DEPLOYMENT.md` § "Automated Cron Jobs" for the full command. The two recommended entries:
+
+```
+# Monthly backtest – first of every month at 09:00 UTC
+0 9 1 * * cd /var/www/Financial-Model && /var/www/Financial-Model/venv/bin/python scripts/run_monthly_backtest.py >> /var/www/Financial-Model/logs/monthly_backtest.log 2>&1
+
+# Daily evaluation – every day at midnight UTC
+0 0 * * * cd /var/www/Financial-Model && /var/www/Financial-Model/venv/bin/python scripts/run_evaluation.py >> /var/www/Financial-Model/logs/evaluation.log 2>&1
+```
+
+The deployment doc also lists the one-time `mkdir -p /var/www/Financial-Model/logs` and `chmod` step.
+
+### 6.9 Database fields added
+
+Five columns added to the `predictions` table; an index added on `batch_id`. Schema details in § 5 above. Existing databases are migrated automatically by `_ensure_prediction_batch_columns(conn)` inside `init_db()` — no manual migration required.
+
+### 6.10 Assumptions and limitations
+
+- **Yahoo Finance availability.** Both scripts depend on `yfinance` working at the moment they run. Errors are caught per-ticker so a transient failure does not crash the whole run, but a multi-hour outage will produce an empty batch.
+- **Top-50 is a snapshot.** The recommendation list reflects fundamentals + news at the moment the script runs. A stock that drops out of the top 50 next month is not removed from this month's batch — that is intentional, since each batch is a frozen forward-test.
+- **Single-process SQLite.** The cron runs and the Flask app share the same `financial_model.db` file. SQLite's locking is fine for this volume (one cron run per month, low concurrent writes), but heavy concurrent traffic against the same DB could surface "database is locked" errors. If that becomes a problem, switching to WAL mode (`PRAGMA journal_mode=WAL`) is the cheap first step.
+- **No retraining.** Each prediction trains a fresh XGBoost model from scratch using the existing `build_prediction` pipeline. Backtest accuracy is therefore equivalent to "what would a user have seen if they ran the model manually at this moment", which is the property the project explicitly wants.
+- **Same-day duplicates from manual UI.** The `prediction_exists_in_batch` check only looks at the monthly batch. If a user happens to also click *Run* on the watchlist for the same `(ticker, model_name, date)` between the cron run and the duplicate check, the older `prediction_exists(...)` helper catches it instead. Both checks coexist cleanly.

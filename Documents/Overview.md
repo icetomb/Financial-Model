@@ -40,6 +40,32 @@ The predictions page stores every saved forecast and evaluates it once the 30-da
 
 ---
 
+### 3a. Automated Monthly Backtesting
+
+A pair of cron-driven scripts turn the predictions history into a continuously-running, fully automated monthly backtest:
+
+- **`scripts/run_monthly_backtest.py`** — once a month, pulls the **top 50 recommendations** using the same defaults as the Recommendations page (no sector / industry / sort overrides, profitable-only off, $1 B+ market cap floor) and runs **every registered prediction model** (currently Model 1 + Model 2) against each ticker with a 30-day horizon. Each prediction is saved to the existing `predictions` table tagged with a monthly batch ID such as `recommendations_2026_05`.
+- **`scripts/run_evaluation.py`** — runs daily, calling the same evaluation logic that powers the **Evaluate** button on the Predictions page. Any prediction whose 30-day horizon has elapsed is scored against actual Yahoo Finance closing prices.
+
+The result is a self-updating, model-vs-model performance dataset: each monthly batch becomes a 30-day forward-test that is automatically evaluated as soon as the horizon completes.
+
+**Why it exists:** comparing model accuracy fairly requires a constant stream of identical-conditions predictions. Manually picking 50 stocks and running both models every month would be tedious and inconsistent; this automation guarantees the same recommendation engine output is back-tested, by every model, every single month.
+
+**Idempotency:** each prediction is keyed on `(batch_id, ticker, model_name)`. Running the script twice in the same month skips already-saved predictions instead of duplicating them.
+
+**Future-proofing:** the cron script discovers models via `models.get_available_models()`. Adding "Model 3" requires importing it into `models/__init__.py` and adding one line to `MODEL_BUILDERS`; no further changes are needed to keep the automation in sync.
+
+A read-only inspection API exposes batch results:
+
+| Endpoint | Returns |
+|---|---|
+| `GET /api/backtests` | One summary row per monthly batch (totals + per-model accuracy) |
+| `GET /api/backtests/<batch_id>` | Per-model breakdown for a single batch (e.g. `recommendations_2026_05`) |
+
+See `Documents/Technical-Reference.md` for full schema, function-level details, and `Documents/DEPLOYMENT.md` for the production cron entries.
+
+---
+
 ### 4. Stock Screener — Likely Gainers & Likely Decliners
 
 The recommendations page is split into two complementary tabs:
