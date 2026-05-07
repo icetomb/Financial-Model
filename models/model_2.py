@@ -17,6 +17,8 @@ Model 2 = stock technicals + market context
 
 from __future__ import annotations
 
+import threading
+import time
 import warnings
 from datetime import date, timedelta
 
@@ -79,10 +81,56 @@ FEATURE_COLUMNS = (
 # Data helpers
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Tiny in-process market-data cache.
+#
+# SPY and ^VIX are downloaded once per ticker × Model 2 invocation, but
+# their values are identical for every ticker in a single cron run.
+# Caching the Close series for a few minutes turns ~50 redundant SPY/VIX
+# downloads (one per ticker in the monthly backtest) into a single
+# network call.  Same TTL/eviction strategy as model_1._DOWNLOAD_CACHE.
+# ---------------------------------------------------------------------------
+_CLOSE_CACHE_TTL_SECONDS = 300
+_CLOSE_CACHE_MAX_ENTRIES = 8
+_CLOSE_CACHE: dict[tuple[str, str, str], tuple[float, pd.Series]] = {}
+_CLOSE_CACHE_LOCK = threading.Lock()
+
+
+def _close_cache_get(key: tuple[str, str, str]) -> pd.Series | None:
+    with _CLOSE_CACHE_LOCK:
+        entry = _CLOSE_CACHE.get(key)
+        if entry is None:
+            return None
+        timestamp, series = entry
+        if time.monotonic() - timestamp > _CLOSE_CACHE_TTL_SECONDS:
+            _CLOSE_CACHE.pop(key, None)
+            return None
+        return series.copy()
+
+
+def _close_cache_put(key: tuple[str, str, str], series: pd.Series) -> None:
+    with _CLOSE_CACHE_LOCK:
+        if len(_CLOSE_CACHE) >= _CLOSE_CACHE_MAX_ENTRIES and key not in _CLOSE_CACHE:
+            oldest = min(_CLOSE_CACHE.items(), key=lambda kv: kv[1][0])[0]
+            _CLOSE_CACHE.pop(oldest, None)
+        _CLOSE_CACHE[key] = (time.monotonic(), series.copy())
+
+
+def _clear_close_cache() -> None:
+    """Test hook – wipe the in-process market-data cache."""
+    with _CLOSE_CACHE_LOCK:
+        _CLOSE_CACHE.clear()
+
+
 def _download_close(ticker: str, start: str, end: str | None = None) -> pd.Series:
     """Download the Close price series for a market ticker (SPY or ^VIX)."""
     if end is None:
         end = (date.today() + timedelta(days=1)).isoformat()
+
+    cache_key = (ticker.upper(), start, end)
+    cached = _close_cache_get(cache_key)
+    if cached is not None:
+        return cached
 
     try:
         df = yf.download(ticker, start=start, end=end, auto_adjust=True, progress=False)
@@ -97,7 +145,9 @@ def _download_close(ticker: str, start: str, end: str | None = None) -> pd.Serie
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
 
-    return df["Close"].dropna()
+    series = df["Close"].dropna()
+    _close_cache_put(cache_key, series)
+    return series
 
 
 # ---------------------------------------------------------------------------

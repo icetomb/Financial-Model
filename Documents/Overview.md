@@ -53,6 +53,15 @@ The result is a self-updating, model-vs-model performance dataset: each monthly 
 
 **Idempotency:** each prediction is keyed on `(batch_id, ticker, model_name)`. Running the script twice in the same month skips already-saved predictions instead of duplicating them.
 
+**Resilience to Yahoo Finance flakiness:** Yahoo's public endpoints occasionally return `401 Unauthorized`, `429 Too Many Requests`, or `5xx` responses that clear up seconds later. The cron flow handles this without aborting the whole run:
+
+- Each model invocation is **retried up to 3 times** with exponential backoff (1.5 s, 3 s) on transient HTTP/network errors.
+- A short pause between tickers keeps the script from being rate-limited during a 50-ticker run.
+- Failures are classified as either **data-fetch failures** (transient yfinance issues — recorded in `failed_tickers`) or **model failures** (genuine prediction-pipeline errors). The two are reported separately in the run summary so a Yahoo outage is never mistaken for a model regression.
+- A failure for one `(ticker, model)` pair never aborts the rest of the batch; the script logs it and keeps going.
+- In-process caches in `models.model_1` / `models.model_2` ensure the same ticker's price history (and SPY/VIX) are not re-downloaded for every model.
+- If `yf.Ticker(...).info` fails entirely for a ticker, the screener falls back to that ticker's stale fundamentals row instead of dropping it.
+
 **Future-proofing:** the cron script discovers models via `models.get_available_models()`. Adding "Model 3" requires importing it into `models/__init__.py` and adding one line to `MODEL_BUILDERS`; no further changes are needed to keep the automation in sync.
 
 A read-only inspection API exposes batch results:

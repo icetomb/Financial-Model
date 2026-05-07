@@ -47,6 +47,16 @@ def _use_temp_db(tmp_path, monkeypatch):
     db.init_db()
 
 
+@pytest.fixture(autouse=True)
+def _no_sleeps(monkeypatch):
+    """Stub out ``time.sleep`` so retry-backoff and inter-ticker delays
+    do not stretch the test suite.  ``with_retries`` resolves the
+    sleeper at call time so this monkeypatch reaches it."""
+    import time as _time
+
+    monkeypatch.setattr(_time, "sleep", lambda *_: None)
+
+
 def _fake_recommendation(ticker: str, rank: int, score: float = 80.0) -> dict:
     return {
         "ticker": ticker,
@@ -605,3 +615,320 @@ class TestBacktestApi:
     def test_detail_endpoint_404_for_unknown(self, client):
         resp = client.get("/api/backtests/does_not_exist")
         assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# yfinance resilience helpers  (services/yf_resilience.py)
+# ---------------------------------------------------------------------------
+
+class TestIsTransientError:
+    """``is_transient_error`` should match common yfinance failures."""
+
+    def test_unauthorized_message(self):
+        from services.yf_resilience import is_transient_error
+        assert is_transient_error(Exception("HTTP Error 401: Unauthorized")) is True
+
+    def test_too_many_requests(self):
+        from services.yf_resilience import is_transient_error
+        assert is_transient_error(Exception("429 Too Many Requests")) is True
+
+    def test_timeout_message(self):
+        from services.yf_resilience import is_transient_error
+        assert is_transient_error(Exception("read timed out")) is True
+
+    def test_server_error(self):
+        from services.yf_resilience import is_transient_error
+        assert is_transient_error(Exception("HTTP Error 503: Service Unavailable")) is True
+
+    def test_connection_error_type(self):
+        from services.yf_resilience import is_transient_error
+        assert is_transient_error(ConnectionError("network down")) is True
+
+    def test_walks_cause_chain(self):
+        """A PredictionError chained from a 401 must still classify as transient."""
+        from models import PredictionError
+        from services.yf_resilience import is_transient_error
+        try:
+            try:
+                raise Exception("HTTP Error 401: Unauthorized")
+            except Exception as inner:
+                raise PredictionError("Could not download data") from inner
+        except PredictionError as exc:
+            assert is_transient_error(exc) is True
+
+    def test_non_transient(self):
+        from services.yf_resilience import is_transient_error
+        assert is_transient_error(ValueError("not enough history")) is False
+        assert is_transient_error(KeyError("missing column")) is False
+
+
+class TestWithRetries:
+    """``with_retries`` should retry transient errors and surface model errors."""
+
+    def test_succeeds_on_first_attempt(self):
+        from services.yf_resilience import with_retries
+
+        calls = {"n": 0}
+
+        def fn():
+            calls["n"] += 1
+            return "ok"
+
+        assert with_retries(fn, attempts=3) == "ok"
+        assert calls["n"] == 1
+
+    def test_recovers_after_transient_failures(self):
+        from services.yf_resilience import with_retries
+
+        calls = {"n": 0}
+
+        def fn():
+            calls["n"] += 1
+            if calls["n"] < 3:
+                raise Exception("HTTP Error 401: Unauthorized")
+            return "recovered"
+
+        assert with_retries(fn, attempts=3, sleeper=lambda _: None) == "recovered"
+        assert calls["n"] == 3
+
+    def test_raises_after_attempts_exhausted(self):
+        from services.yf_resilience import with_retries
+
+        calls = {"n": 0}
+
+        def fn():
+            calls["n"] += 1
+            raise Exception("HTTP Error 503: Service Unavailable")
+
+        with pytest.raises(Exception, match="503"):
+            with_retries(fn, attempts=3, sleeper=lambda _: None)
+        assert calls["n"] == 3
+
+    def test_does_not_retry_non_transient_errors(self):
+        from services.yf_resilience import with_retries
+
+        calls = {"n": 0}
+
+        def fn():
+            calls["n"] += 1
+            raise ValueError("not enough history")
+
+        with pytest.raises(ValueError):
+            with_retries(fn, attempts=3, sleeper=lambda _: None)
+        assert calls["n"] == 1  # only the initial attempt
+
+
+# ---------------------------------------------------------------------------
+# Cron-script integration with the resilience layer
+# ---------------------------------------------------------------------------
+
+def _transient_prediction_error(message: str = "HTTP Error 401: Unauthorized"):
+    """Build a PredictionError chained from a transient HTTP error,
+    matching what ``models.model_1.download_data`` actually raises."""
+    from models import PredictionError
+    err = PredictionError("Could not download stock data")
+    err.__cause__ = Exception(message)
+    return err
+
+
+class TestRetryAndResilience:
+    """End-to-end behaviour of the cron script when yfinance misbehaves."""
+
+    @patch("scripts.run_monthly_backtest.run_model")
+    @patch("scripts.run_monthly_backtest.get_recommendations")
+    def test_transient_error_retried_and_eventually_succeeds(
+        self, mock_get_recs, mock_run_model,
+    ):
+        mock_get_recs.return_value = [_fake_recommendation("AAA", 1)]
+
+        attempts: dict[str, int] = {}
+
+        def side_effect(model_name, ticker):
+            key = f"{ticker}/{model_name}"
+            attempts[key] = attempts.get(key, 0) + 1
+            if attempts[key] < 2:
+                raise _transient_prediction_error()
+            return _fake_model_result(ticker)
+
+        mock_run_model.side_effect = side_effect
+
+        from scripts.run_monthly_backtest import run
+
+        summary = run()
+
+        # Every (ticker, model) was retried at least once and ultimately saved.
+        assert summary["saved"] == len(get_available_models())
+        assert summary["data_failure_count"] == 0
+        assert summary["model_failure_count"] == 0
+        for key, n in attempts.items():
+            assert n == 2, f"{key} should have retried once (got {n} attempts)"
+
+    @patch("scripts.run_monthly_backtest.run_model")
+    @patch("scripts.run_monthly_backtest.get_recommendations")
+    def test_transient_error_classified_as_data_failure_after_exhaustion(
+        self, mock_get_recs, mock_run_model,
+    ):
+        mock_get_recs.return_value = [_fake_recommendation("AAA", 1)]
+        # NOTE: assigning the exception instance to ``side_effect`` makes
+        # Mock raise it on every call.  Using a lambda would *return* the
+        # exception object instead of raising it.
+        mock_run_model.side_effect = _transient_prediction_error()
+
+        from scripts.run_monthly_backtest import RETRY_ATTEMPTS, run
+
+        summary = run()
+        models = get_available_models()
+
+        assert summary["saved"] == 0
+        assert summary["data_failure_count"] == len(models)
+        assert summary["model_failure_count"] == 0
+        assert summary["failed_tickers"] == ["AAA"]
+        for failure in summary["data_failures"]:
+            assert failure["ticker"] == "AAA"
+            assert failure["model_name"] in models
+
+        # And confirm that with_retries actually attempted RETRY_ATTEMPTS times
+        # per (ticker, model) pair before giving up.
+        assert mock_run_model.call_count == len(models) * RETRY_ATTEMPTS
+
+    @patch("scripts.run_monthly_backtest.run_model")
+    @patch("scripts.run_monthly_backtest.get_recommendations")
+    def test_non_transient_error_not_retried_and_classified_as_model_failure(
+        self, mock_get_recs, mock_run_model,
+    ):
+        mock_get_recs.return_value = [_fake_recommendation("AAA", 1)]
+
+        from models import PredictionError
+        mock_run_model.side_effect = PredictionError("not enough history")
+
+        from scripts.run_monthly_backtest import run
+
+        summary = run()
+        models = get_available_models()
+
+        assert summary["saved"] == 0
+        assert summary["model_failure_count"] == len(models)
+        assert summary["data_failure_count"] == 0
+        # No retries on a non-transient error.
+        assert mock_run_model.call_count == len(models)
+        # Non-transient errors are NOT counted as failed tickers.
+        assert summary["failed_tickers"] == []
+
+    @patch("scripts.run_monthly_backtest.run_model")
+    @patch("scripts.run_monthly_backtest.get_recommendations")
+    def test_one_bad_ticker_does_not_break_the_rest(
+        self, mock_get_recs, mock_run_model,
+    ):
+        mock_get_recs.return_value = [
+            _fake_recommendation("BAD", 1),
+            _fake_recommendation("GOOD", 2),
+        ]
+
+        def side_effect(model_name, ticker):
+            if ticker == "BAD":
+                raise _transient_prediction_error()
+            return _fake_model_result(ticker)
+
+        mock_run_model.side_effect = side_effect
+
+        from scripts.run_monthly_backtest import run
+
+        summary = run()
+        models = get_available_models()
+
+        # GOOD's predictions still made it.
+        assert summary["saved"] == len(models)
+        # BAD shows up exactly once in failed_tickers.
+        assert summary["failed_tickers"] == ["BAD"]
+        assert summary["data_failure_count"] == len(models)
+
+
+class TestDownloadCacheReuse:
+    """Both models should share a single download per ticker via the
+    in-process cache in ``models.model_1``."""
+
+    def test_download_data_caches_per_ticker(self, monkeypatch):
+        import pandas as pd
+        from models import model_1
+
+        model_1._clear_download_cache()
+
+        calls = {"n": 0}
+
+        def fake_yf_download(ticker, start, end, **_):
+            calls["n"] += 1
+            return pd.DataFrame(
+                {
+                    "Open":   [1.0, 2.0],
+                    "High":   [1.1, 2.1],
+                    "Low":    [0.9, 1.9],
+                    "Close":  [1.0, 2.0],
+                    "Volume": [100, 200],
+                }
+            )
+
+        monkeypatch.setattr(model_1.yf, "download", fake_yf_download)
+
+        df1 = model_1.download_data("AAPL", "2024-01-01", "2024-01-03")
+        df2 = model_1.download_data("AAPL", "2024-01-01", "2024-01-03")
+
+        assert calls["n"] == 1, "Second call should hit the in-process cache"
+        assert df1.equals(df2)
+
+        model_1._clear_download_cache()
+
+
+class TestStaleFundamentalsFallback:
+    """If ``yf.Ticker(...).info`` fails, the screener should fall back to
+    the stale cache row instead of dropping the ticker."""
+
+    def test_falls_back_to_stale_cache_on_yfinance_failure(self, monkeypatch):
+        from datetime import datetime, timedelta
+        from services import recommendations
+
+        # Seed a stale fundamentals row (older than CACHE_TTL_HOURS).
+        stale_row = {
+            "ticker": "STALE",
+            "company_name": "Stale Corp",
+            "sector": "Technology",
+            "industry": "Software",
+            "current_price": 50.0,
+            "week52_high": 80.0,
+            "week52_low": 40.0,
+            "ma200": 55.0,
+            "month_return": -0.05,
+            "market_cap": 5_000_000_000,
+            "net_income": 1_000_000_000,
+            "operating_cashflow": 1_500_000_000,
+            "free_cashflow": 800_000_000,
+            "revenue_growth": 0.05,
+            "debt_to_equity": 0.3,
+            "roe": 0.18,
+        }
+        db.upsert_fundamentals_cache(stale_row)
+
+        # Force the cached row to look ancient.
+        ancient = (datetime.utcnow() - timedelta(hours=72)).isoformat()
+        conn = db.get_connection()
+        conn.execute(
+            "UPDATE fundamentals_cache SET last_updated = ? WHERE ticker = ?",
+            (ancient, "STALE"),
+        )
+        conn.commit()
+        conn.close()
+
+        # Make the live yfinance call explode like a real 401 would.
+        class _FakeTicker:
+            def __init__(self, *_):
+                pass
+
+            @property
+            def info(self):
+                raise Exception("HTTP Error 401: Unauthorized")
+
+        monkeypatch.setattr(recommendations.yf, "Ticker", _FakeTicker)
+
+        result = recommendations._fetch_stock_data("STALE")
+        assert result is not None
+        assert result["ticker"] == "STALE"
+        assert result["current_price"] == 50.0

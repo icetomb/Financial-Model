@@ -96,8 +96,15 @@ def _fetch_stock_data(ticker: str) -> dict[str, Any] | None:
     Returns a flat dict with the fields the scorer needs, or ``None`` when
     critical data is unavailable.  Results are cached in the DB so repeat
     page loads don't hammer the API.
+
+    If the live ``Ticker.info`` call fails (typically a transient
+    Yahoo 401/429/5xx) and we have a stale cache row on disk, fall back
+    to the stale row instead of dropping the ticker entirely.  This
+    keeps the screener (and the monthly backtest that consumes it)
+    usable during Yahoo outages.
     """
     cached = db.get_fundamentals_cache(ticker)
+    age_hours: float | None = None
     if cached:
         age_hours = (
             datetime.utcnow() - datetime.fromisoformat(cached["last_updated"])
@@ -110,6 +117,13 @@ def _fetch_stock_data(ticker: str) -> dict[str, Any] | None:
         info: dict = tk.info or {}
     except Exception:
         logger.warning("yfinance .info failed for %s", ticker)
+        if cached:
+            logger.info(
+                "Falling back to stale fundamentals cache for %s (age %.1fh)",
+                ticker,
+                age_hours if age_hours is not None else -1.0,
+            )
+            return cached
         return None
 
     current_price = info.get("currentPrice") or info.get("regularMarketPrice")
