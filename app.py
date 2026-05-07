@@ -1,40 +1,20 @@
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
-
-import pandas as pd
 import yfinance as yf
 from flask import Flask, jsonify, render_template, request
 
 import database as db
-from models.model_1 import PredictionError
-from models.model_1 import build_prediction as build_prediction_m1
-from models.model_2 import build_prediction as build_prediction_m2
+from models import (
+    PredictionError,
+    get_available_models,
+    return_direction as _return_direction,
+    run_model as _run_model,
+)
+from services.backtests import list_batch_summaries, summarize_batch
 from services.downside_risk import get_downside_risk_stocks, get_stock_news
+from services.evaluation import evaluate_pending_predictions
 from services.recommendations import get_recommendations, get_ticker_news
 from services.stock_universe import get_industries, get_sectors
-
-# Maps model names to their build_prediction functions.
-# Adding a future Model 3 means importing it and adding one entry here.
-MODEL_BUILDERS = {
-    "Model 1": build_prediction_m1,
-    "Model 2": build_prediction_m2,
-}
-
-
-def _return_direction(value: float) -> str:
-    """Map a return value to 'up', 'down', or 'neutral'."""
-    if value > 0:
-        return "up"
-    if value < 0:
-        return "down"
-    return "neutral"
-
-
-def _run_model(model_name: str, ticker: str) -> dict:
-    """Look up the correct model builder and run it."""
-    build_fn = MODEL_BUILDERS.get(model_name, build_prediction_m1)
-    return build_fn(ticker)
 
 
 def create_app() -> Flask:
@@ -318,77 +298,35 @@ def create_app() -> Flask:
 
     @app.post("/api/predictions/evaluate")
     def api_evaluate_predictions():
-        """Evaluate every pending prediction whose horizon has elapsed."""
-        pending = db.get_pending_predictions()
-        today = date.today()
-        evaluated: list[int] = []
-        errors: list[str] = []
+        """Evaluate every pending prediction whose horizon has elapsed.
 
-        for pred in pending:
-            pred_date = datetime.strptime(pred["prediction_date"], "%Y-%m-%d").date()
-            target_date = pred_date + timedelta(days=pred["forecast_horizon_days"])
-
-            if today < target_date:
-                continue
-
-            try:
-                # Download the close price on (or just after) the target date
-                ticker_data = yf.download(
-                    pred["ticker"],
-                    start=target_date.isoformat(),
-                    end=(target_date + timedelta(days=7)).isoformat(),
-                    progress=False,
-                )
-                if isinstance(ticker_data.columns, pd.MultiIndex):
-                    ticker_data.columns = ticker_data.columns.get_level_values(0)
-
-                if ticker_data.empty:
-                    errors.append(f"No price data for {pred['ticker']} around {target_date}")
-                    continue
-
-                actual_price = float(ticker_data["Close"].iloc[0])
-                actual_return = (actual_price - pred["latest_close"]) / pred["latest_close"]
-                actual_direction = _return_direction(actual_return)
-
-                direction_correct = pred["predicted_direction"] == actual_direction
-
-                abs_predicted = abs(pred["predicted_return"])
-                abs_actual = abs(actual_return)
-                if abs(abs_actual - abs_predicted) < 0.0001:
-                    magnitude = "equal"
-                elif abs_actual > abs_predicted:
-                    magnitude = "bigger"
-                else:
-                    magnitude = "smaller"
-
-                prediction_error = actual_return - pred["predicted_return"]
-
-                db.evaluate_prediction(
-                    pred["id"],
-                    actual_price,
-                    actual_return,
-                    actual_direction,
-                    direction_correct,
-                    magnitude,
-                    prediction_error,
-                )
-                evaluated.append(pred["id"])
-
-            except Exception as exc:
-                errors.append(f"Error evaluating {pred['ticker']}: {exc}")
-
-        return jsonify(
-            {
-                "evaluated_count": len(evaluated),
-                "evaluated_ids": evaluated,
-                "errors": errors,
-            }
-        )
+        The actual logic lives in ``services.evaluation`` so the cron
+        script (`scripts/run_evaluation.py`) can call it directly without
+        going through HTTP.
+        """
+        return jsonify(evaluate_pending_predictions())
 
     @app.get("/api/models")
     def api_get_models():
         """Return the list of available model names (drives dynamic UI)."""
-        return jsonify(list(MODEL_BUILDERS.keys()))
+        return jsonify(get_available_models())
+
+    # ------------------------------------------------------------------
+    # Monthly backtest API  (read-only inspection)
+    # ------------------------------------------------------------------
+
+    @app.get("/api/backtests")
+    def api_list_backtests():
+        """Return summaries for every monthly backtest batch on file."""
+        return jsonify(list_batch_summaries())
+
+    @app.get("/api/backtests/<batch_id>")
+    def api_get_backtest(batch_id: str):
+        """Return aggregated stats + per-model accuracy for a single batch."""
+        summary = summarize_batch(batch_id)
+        if summary is None:
+            return jsonify({"error": f"Unknown batch_id: {batch_id}"}), 404
+        return jsonify(summary)
 
     @app.get("/api/performance")
     def api_get_performance():

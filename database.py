@@ -29,9 +29,69 @@ def get_connection() -> sqlite3.Connection:
     return conn
 
 
+def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    """Return the set of column names that currently exist on *table*.
+
+    Wraps ``PRAGMA table_info(<table>)`` so callers can ask "does this
+    column exist?" without parsing PRAGMA output everywhere.
+    """
+    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    return {row["name"] for row in rows}
+
+
+# Columns added by the monthly-backtest feature.  Listed once so the fresh
+# CREATE TABLE and the legacy ALTER TABLE migration agree on the schema.
+#
+# NOTE: SQLite cannot ALTER TABLE ADD COLUMN with a NOT NULL clause unless
+# a constant default is supplied (which we do for prediction_source).
+_PREDICTION_BATCH_COLUMNS: list[tuple[str, str]] = [
+    ("batch_id",             "TEXT"),
+    ("batch_date",           "TEXT"),
+    ("prediction_source",    "TEXT NOT NULL DEFAULT 'manual'"),
+    ("recommendation_rank",  "INTEGER"),
+    ("recommendation_score", "REAL"),
+]
+
+
+def _migrate_predictions_table(conn: sqlite3.Connection) -> list[str]:
+    """Add any monthly-backtest batch columns that are missing.
+
+    Compares the live ``predictions`` schema (via ``PRAGMA table_info``)
+    against ``_PREDICTION_BATCH_COLUMNS`` and issues an ``ALTER TABLE
+    ADD COLUMN`` for every column that does not already exist.  Existing
+    rows are left untouched; new columns are NULL (or ``'manual'`` for
+    ``prediction_source``).
+
+    Returns the list of column names that were actually added so the
+    caller / tests can log or assert on the migration.
+    """
+    existing = _table_columns(conn, "predictions")
+    added: list[str] = []
+    for col_name, col_def in _PREDICTION_BATCH_COLUMNS:
+        if col_name in existing:
+            continue
+        conn.execute(f"ALTER TABLE predictions ADD COLUMN {col_name} {col_def}")
+        added.append(col_name)
+    return added
+
+
 def init_db() -> None:
-    """Create tables if they don't already exist."""
+    """Create tables if they don't already exist, then run any pending
+    column migrations, then create supporting indexes.
+
+    Order matters:
+
+    1. ``CREATE TABLE IF NOT EXISTS`` is a no-op when the table already
+       exists, so it cannot retro-fit columns onto a legacy database.
+    2. Therefore we explicitly call :func:`_migrate_predictions_table`
+       *before* anything that references the new ``batch_id`` column —
+       otherwise creating an index on ``batch_id`` would fail on legacy
+       databases with ``no such column: batch_id``.
+    3. Indexes are created last, once the schema is known to be current.
+    """
     conn = get_connection()
+
+    # ---- Stage 1: create base tables on a fresh database -------------
     conn.executescript("""
         CREATE TABLE IF NOT EXISTS watchlist (
             id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -97,9 +157,33 @@ def init_db() -> None:
             magnitude_comparison  TEXT,
             prediction_error      REAL,
             evaluated_at          TEXT,
-            created_at            TEXT    NOT NULL
+            created_at            TEXT    NOT NULL,
+            batch_id              TEXT,
+            batch_date            TEXT,
+            prediction_source     TEXT    NOT NULL DEFAULT 'manual',
+            recommendation_rank   INTEGER,
+            recommendation_score  REAL
         );
     """)
+
+    # ---- Stage 2: migrate legacy databases ---------------------------
+    # Must run *before* any index / query that touches the new columns,
+    # otherwise an upgraded DB without batch_id will fail with
+    # "no such column: batch_id".
+    _migrate_predictions_table(conn)
+
+    # ---- Stage 3: indexes (safe now that columns are guaranteed) -----
+    # Unique partial index doubles as duplicate protection at the DB
+    # level for monthly backtest rows.  The WHERE clause keeps legacy
+    # rows (batch_id IS NULL) out of the uniqueness check entirely.
+    conn.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_predictions_batch_unique
+            ON predictions(batch_id, ticker, model_name)
+            WHERE batch_id IS NOT NULL
+        """
+    )
+
     conn.commit()
     conn.close()
 
@@ -196,16 +280,30 @@ def save_prediction(
     predicted_price: float,
     predicted_direction: str,
     forecast_horizon_days: int = 30,
+    *,
+    batch_id: str | None = None,
+    batch_date: str | None = None,
+    prediction_source: str = "manual",
+    recommendation_rank: int | None = None,
+    recommendation_score: float | None = None,
 ) -> dict:
-    """Insert a new prediction row and return it as a dict."""
+    """Insert a new prediction row and return it as a dict.
+
+    ``batch_id`` / ``batch_date`` / ``prediction_source`` /
+    ``recommendation_rank`` / ``recommendation_score`` are optional metadata
+    populated by the monthly backtest automation; manual predictions made
+    from the UI continue to leave them at their defaults.
+    """
     conn = get_connection()
     conn.execute(
         """
         INSERT INTO predictions
             (model_name, ticker, prediction_date, latest_close,
              predicted_return, predicted_price, predicted_direction,
-             forecast_horizon_days, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+             forecast_horizon_days, created_at,
+             batch_id, batch_date, prediction_source,
+             recommendation_rank, recommendation_score)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             model_name,
@@ -217,6 +315,11 @@ def save_prediction(
             predicted_direction,
             forecast_horizon_days,
             datetime.now().isoformat(),
+            batch_id,
+            batch_date,
+            prediction_source,
+            recommendation_rank,
+            recommendation_score,
         ),
     )
     conn.commit()
@@ -224,6 +327,64 @@ def save_prediction(
     row = conn.execute("SELECT * FROM predictions WHERE id = ?", (pred_id,)).fetchone()
     conn.close()
     return dict(row)
+
+
+def prediction_exists_in_batch(batch_id: str, ticker: str, model_name: str) -> bool:
+    """Return True if a prediction already exists for this monthly batch+ticker+model.
+
+    Used by the monthly backtest to guarantee idempotency when the same
+    cron job runs twice in the same calendar month.
+    """
+    conn = get_connection()
+    row = conn.execute(
+        """
+        SELECT 1 FROM predictions
+        WHERE batch_id = ? AND ticker = ? AND model_name = ?
+        """,
+        (batch_id, ticker.upper(), model_name),
+    ).fetchone()
+    conn.close()
+    return row is not None
+
+
+def get_predictions_by_batch(batch_id: str) -> list[dict]:
+    """Return every prediction row associated with *batch_id*."""
+    conn = get_connection()
+    rows = conn.execute(
+        """
+        SELECT * FROM predictions
+        WHERE batch_id = ?
+        ORDER BY recommendation_rank ASC, model_name ASC
+        """,
+        (batch_id,),
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_batch_ids() -> list[dict]:
+    """List distinct batches in the predictions table, newest first.
+
+    Returns a list of dicts with ``batch_id``, ``batch_date``,
+    ``prediction_source``, and ``total_predictions`` so the API can
+    render a summary list without a per-row scan.
+    """
+    conn = get_connection()
+    rows = conn.execute(
+        """
+        SELECT
+            batch_id,
+            MIN(batch_date)         AS batch_date,
+            MIN(prediction_source)  AS prediction_source,
+            COUNT(*)                AS total_predictions
+        FROM predictions
+        WHERE batch_id IS NOT NULL
+        GROUP BY batch_id
+        ORDER BY batch_date DESC, batch_id DESC
+        """
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
 
 
 def get_predictions(
